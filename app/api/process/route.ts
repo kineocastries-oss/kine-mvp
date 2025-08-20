@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import OpenAI from 'openai';
-import { supabaseServer } from '@/lib/supabase';
-import { systemPrompt, userPrompt } from '@/lib/prompt';
+import { supabaseServer } from "../../../lib/supabase";
+import { systemPrompt, userPrompt } from "../../../lib/prompt";
+
 import PDFDocument from 'pdfkit';
 import { Resend } from 'resend';
 import { marked } from 'marked';
