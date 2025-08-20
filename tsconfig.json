@@ -1,19 +1,32 @@
 {
-  "compilerOptions": {
-    "target": "ES2020",
-    "lib": ["dom", "dom.iterable", "es2020"],
-    "allowJs": true,
-    "skipLibCheck": true,
-    "strict": true,
-    "noEmit": true,
-    "module": "esnext",
-    "moduleResolution": "bundler",
-    "resolveJsonModule": true,
-    "isolatedModules": true,
-    "jsx": "preserve",
-    "baseUrl": ".",
-    "paths": { "@/*": ["./*"] }
+  "name": "kine-mvp",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint"
   },
-  "include": ["next-env.d.ts", "**/*.ts", "**/*.tsx"],
-  "exclude": ["node_modules"]
+  "dependencies": {
+    "@supabase/supabase-js": "2.45.5",
+    "formidable": "3.5.1",
+    "marked": "12.0.2",
+    "next": "14.2.5",
+    "openai": "4.56.0",
+    "pdfkit": "0.15.0",
+    "react": "18.2.0",
+    "react-dom": "18.2.0",
+    "resend": "3.4.0",
+    "iconv-lite": "0.6.3"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.0",
+    "@types/react": "^18.2.0",
+    "@types/node": "^20.11.0",
+    "eslint": "^8.57.0",
+    "eslint-config-next": "14.2.5"
+  }
 }
+
+
