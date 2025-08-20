@@ -1,4 +1,5 @@
-import dynamic from 'next/dynamic';
+const Recorder = dynamic(() => import('../../components/RecorderMulti'), { ssr: false });
+
 const Recorder = dynamic(() => import('@/components/RecorderMulti'), { ssr: false });
 
 export default function NouveauBilan() {
