@@ -1,5 +1,4 @@
 import type { Metadata } from "next";
-import "./globals.css"; // si tu n'as pas de fichier globals.css dans Application/, supprime cette ligne
 
 export const metadata: Metadata = {
   title: "Kiné MVP",
