@@ -21,10 +21,12 @@
     "resend": "3.4.0",
     "typescript": "^5.5.0",
     "@types/react": "^18.2.0",
-    "@types/node": "^20.11.0"
+    "@types/node": "^20.11.0",
+    "@types/pdfkit": "^0.12.12"
   },
   "devDependencies": {
     "eslint": "^8.57.0",
     "eslint-config-next": "14.2.5"
   }
 }
+
