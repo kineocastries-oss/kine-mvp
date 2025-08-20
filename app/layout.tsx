@@ -1,13 +1,19 @@
-import dynamic from 'next/dynamic';
+import './globals.css';
+import type { Metadata } from 'next';
 
-const Recorder = dynamic(() => import('../../components/RecorderMulti'), { ssr: false });
+export const metadata: Metadata = {
+  title: 'MVP Bilan Kiné',
+  description: 'Application de génération de bilans kinés avec IA',
+};
 
-export default function NouveauBilan() {
+export default function RootLayout({
+  children,
+}: {
+  children: React.ReactNode;
+}) {
   return (
-    <main className="p-8 max-w-2xl">
-      <h2 className="text-xl font-semibold">Nouveau bilan</h2>
-      <Recorder />
-    </main>
+    <html lang="fr">
+      <body>{children}</body>
+    </html>
   );
 }
-
