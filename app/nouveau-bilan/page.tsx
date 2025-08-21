@@ -1,15 +1,20 @@
 "use client";
 
 import { useCallback, useMemo, useState } from "react";
-import RecorderMulti from "../../components/RecorderMulti";
+import RecorderMulti from "../../components/RecorderMulti"; // vérifie le chemin
 
 export default function NouveauBilanPage() {
+  // ---- Champs du formulaire
   const [patientName, setPatientName] = useState("");
   const [emailKine, setEmailKine] = useState("");
   const [emailPatient, setEmailPatient] = useState("");
+
+  // ---- Enregistrements
   const [audioPaths, setAudioPaths] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
   const [reportUrl, setReportUrl] = useState<string | null>(null);
+
+  // Id technique (dossier pour ranger les segments dans Storage)
   const [consultationId] = useState<string>(() => crypto.randomUUID());
 
   // DEBUG flags
@@ -18,11 +23,13 @@ export default function NouveauBilanPage() {
   const hasMediaDevices = hasNavigator && "mediaDevices" in navigator;
   const hasGetUserMedia =
     hasMediaDevices && typeof (navigator as any).mediaDevices.getUserMedia === "function";
-  const envUrl = typeof process !== "undefined" ? !!process.env.NEXT_PUBLIC_SUPABASE_URL : false;
-  const envAnon = typeof process !== "undefined" ? !!process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY : false;
+  const envUrl =
+    typeof process !== "undefined" ? Boolean(process.env.NEXT_PUBLIC_SUPABASE_URL) : false;
+  const envAnon =
+    typeof process !== "undefined" ? Boolean(process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY) : false;
 
   const handleAudioChange = useCallback((paths: string[]) => {
-    setAudioPaths(paths);
+    setAudioPaths(paths); // on reçoit des chemins "audio/<id>/seg-X.webm"
   }, []);
 
   const canGenerate = useMemo(() => {
@@ -34,6 +41,7 @@ export default function NouveauBilanPage() {
     try {
       setLoading(true);
       setReportUrl(null);
+
       const res = await fetch("/api/generatePdf", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -45,8 +53,10 @@ export default function NouveauBilanPage() {
           audioPaths,
         }),
       });
+
       const json = await res.json();
       if (!res.ok) throw new Error(json.error || "Échec génération PDF");
+
       setReportUrl(json.url || null);
       alert("✅ PDF généré !");
     } catch (err: any) {
@@ -104,10 +114,52 @@ export default function NouveauBilanPage() {
         </div>
       </div>
 
-      {/* Enregistreur */}
+      {/* Enregistreur multi-segments */}
       <section style={{ border: "1px solid #ddd", borderRadius: 8, padding: 16, marginBottom: 16 }}>
         <h2 style={{ marginTop: 0, marginBottom: 8 }}>Enregistrement 🎙️</h2>
 
         <RecorderMulti
-          onChange={handleAudioChange
+          onChange={handleAudioChange}
+          consultationId={consultationId}
+          bucket="audio"
+        />
+
+        {/* Aperçu segments */}
+        <div style={{ marginTop: 12, fontSize: 14 }}>
+          <strong>Segments :</strong> {audioPaths.length}
+          {audioPaths.length > 0 && (
+            <ul style={{ marginTop: 8 }}>
+              {audioPaths.map((p) => (
+                <li key={p} style={{ wordBreak: "break-all" }}>{p}</li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </section>
+
+      {/* Bouton génération */}
+      <button
+        onClick={onGeneratePdf}
+        disabled={!canGenerate}
+        style={{
+          padding: "10px 16px",
+          cursor: canGenerate ? "pointer" : "not-allowed",
+          opacity: canGenerate ? 1 : 0.5,
+        }}
+      >
+        {loading ? "⏳ Génération en cours..." : "📄 Générer le PDF"}
+      </button>
+
+      {/* Lien de téléchargement */}
+      {reportUrl && (
+        <p style={{ marginTop: 14 }}>
+          <a href={reportUrl} target="_blank" rel="noreferrer">
+            🔗 Télécharger le PDF
+          </a>
+        </p>
+      )}
+    </main>
+  );
+}
+
 
