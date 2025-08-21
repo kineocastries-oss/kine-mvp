@@ -1,8 +1,7 @@
 "use client";
 
 import { useCallback, useMemo, useState } from "react";
-import RecorderMulti from "../../components/RecorderMulti";
-
+import RecorderMulti from "../../components/RecorderMulti"; // <= chemin correct
 
 export default function NouveauBilanPage() {
   // ---- Champs du formulaire
@@ -10,17 +9,16 @@ export default function NouveauBilanPage() {
   const [emailKine, setEmailKine] = useState("");
   const [emailPatient, setEmailPatient] = useState("");
 
-  // ---- Segments audio (chemins Supabase "audio/...")
+  // ---- Enregistrements
   const [audioPaths, setAudioPaths] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
   const [reportUrl, setReportUrl] = useState<string | null>(null);
 
-  // Id “technique” du bilan (si tu as déjà une table, remplace par son vrai id)
+  // Id technique (dossier pour ranger les segments dans Storage)
   const [consultationId] = useState<string>(() => crypto.randomUUID());
 
-  // ---- Callback appelé par RecorderMulti quand la liste des segments change
   const handleAudioChange = useCallback((paths: string[]) => {
-    setAudioPaths(paths);
+    setAudioPaths(paths); // on reçoit des chemins "audio/<id>/seg-X.webm"
   }, []);
 
   const canGenerate = useMemo(() => {
@@ -41,7 +39,7 @@ export default function NouveauBilanPage() {
           patientName,
           emailKine,
           emailPatient: emailPatient || null,
-          audioPaths, // ex: ["audio/<id>/seg1.webm", ...] — RecorderMulti doit remplir ça
+          audioPaths,
         }),
       });
 
@@ -100,16 +98,10 @@ export default function NouveauBilanPage() {
       <section style={{ border: "1px solid #ddd", borderRadius: 8, padding: 16, marginBottom: 16 }}>
         <h2 style={{ marginTop: 0, marginBottom: 8 }}>Enregistrement 🎙️</h2>
 
-        {/*
-          IMPORTANT :
-          - RecorderMulti doit appeler "onChange" (ou un prop équivalent) avec la liste des chemins Supabase
-            après chaque ajout/suppression d'un segment.
-          - Si ton composant a une autre API, adapte juste le nom des props.
-        */}
         <RecorderMulti
           onChange={handleAudioChange}
-          consultationId={consultationId} // pratique si RecorderMulti range par dossier "audio/<id>/..."
-          bucket="audio"                  // si ton composant a ce paramètre
+          consultationId={consultationId}
+          bucket="audio"
         />
 
         {/* Aperçu segments */}
@@ -149,3 +141,4 @@ export default function NouveauBilanPage() {
     </main>
   );
 }
+
