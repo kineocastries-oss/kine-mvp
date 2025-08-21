@@ -1,24 +1,28 @@
 "use client";
 
 import { useCallback, useMemo, useState } from "react";
-import RecorderMulti from "../../components/RecorderMulti"; // <= chemin correct
+import RecorderMulti from "../../components/RecorderMulti";
 
 export default function NouveauBilanPage() {
-  // ---- Champs du formulaire
   const [patientName, setPatientName] = useState("");
   const [emailKine, setEmailKine] = useState("");
   const [emailPatient, setEmailPatient] = useState("");
-
-  // ---- Enregistrements
   const [audioPaths, setAudioPaths] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
   const [reportUrl, setReportUrl] = useState<string | null>(null);
-
-  // Id technique (dossier pour ranger les segments dans Storage)
   const [consultationId] = useState<string>(() => crypto.randomUUID());
 
+  // DEBUG flags
+  const hasWindow = typeof window !== "undefined";
+  const hasNavigator = typeof navigator !== "undefined";
+  const hasMediaDevices = hasNavigator && "mediaDevices" in navigator;
+  const hasGetUserMedia =
+    hasMediaDevices && typeof (navigator as any).mediaDevices.getUserMedia === "function";
+  const envUrl = typeof process !== "undefined" ? !!process.env.NEXT_PUBLIC_SUPABASE_URL : false;
+  const envAnon = typeof process !== "undefined" ? !!process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY : false;
+
   const handleAudioChange = useCallback((paths: string[]) => {
-    setAudioPaths(paths); // on reçoit des chemins "audio/<id>/seg-X.webm"
+    setAudioPaths(paths);
   }, []);
 
   const canGenerate = useMemo(() => {
@@ -30,7 +34,6 @@ export default function NouveauBilanPage() {
     try {
       setLoading(true);
       setReportUrl(null);
-
       const res = await fetch("/api/generatePdf", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -42,10 +45,8 @@ export default function NouveauBilanPage() {
           audioPaths,
         }),
       });
-
       const json = await res.json();
       if (!res.ok) throw new Error(json.error || "Échec génération PDF");
-
       setReportUrl(json.url || null);
       alert("✅ PDF généré !");
     } catch (err: any) {
@@ -56,8 +57,17 @@ export default function NouveauBilanPage() {
   }
 
   return (
-    <main style={{ padding: "2rem", maxWidth: 720, margin: "0 auto" }}>
+    <main style={{ padding: "2rem", maxWidth: 820, margin: "0 auto" }}>
       <h1 style={{ marginBottom: 16 }}>Nouveau Bilan 📝</h1>
+
+      {/* Panneau DEBUG visible */}
+      <div style={{ padding: 12, border: "1px dashed #aaa", borderRadius: 8, marginBottom: 16 }}>
+        <div><strong>DEBUG</strong></div>
+        <div>window: {String(hasWindow)} | navigator: {String(hasNavigator)}</div>
+        <div>mediaDevices: {String(hasMediaDevices)} | getUserMedia: {String(hasGetUserMedia)}</div>
+        <div>ENV NEXT_PUBLIC_SUPABASE_URL: {String(envUrl)} | NEXT_PUBLIC_SUPABASE_ANON_KEY: {String(envAnon)}</div>
+        <div>Segments: {audioPaths.length}</div>
+      </div>
 
       {/* Patient */}
       <div style={{ marginBottom: 12 }}>
@@ -94,50 +104,10 @@ export default function NouveauBilanPage() {
         </div>
       </div>
 
-      {/* Enregistreur multi-segments */}
+      {/* Enregistreur */}
       <section style={{ border: "1px solid #ddd", borderRadius: 8, padding: 16, marginBottom: 16 }}>
         <h2 style={{ marginTop: 0, marginBottom: 8 }}>Enregistrement 🎙️</h2>
 
         <RecorderMulti
-          onChange={handleAudioChange}
-          consultationId={consultationId}
-          bucket="audio"
-        />
+          onChange={handleAudioChange
 
-        {/* Aperçu segments */}
-        <div style={{ marginTop: 12, fontSize: 14 }}>
-          <strong>Segments :</strong> {audioPaths.length}
-          {audioPaths.length > 0 && (
-            <ul style={{ marginTop: 8 }}>
-              {audioPaths.map((p) => (
-                <li key={p} style={{ wordBreak: "break-all" }}>{p}</li>
-              ))}
-            </ul>
-          )}
-        </div>
-      </section>
-
-      {/* Bouton génération */}
-      <button
-        onClick={onGeneratePdf}
-        disabled={!canGenerate}
-        style={{
-          padding: "10px 16px",
-          cursor: canGenerate ? "pointer" : "not-allowed",
-          opacity: canGenerate ? 1 : 0.5,
-        }}
-      >
-        {loading ? "⏳ Génération en cours..." : "📄 Générer le PDF"}
-      </button>
-
-      {/* Lien de téléchargement */}
-      {reportUrl && (
-        <p style={{ marginTop: 14 }}>
-          <a href={reportUrl} target="_blank" rel="noreferrer">
-            🔗 Télécharger le PDF
-          </a>
-        </p>
-      )}
-    </main>
-  );
-}
