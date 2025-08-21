@@ -40,7 +40,7 @@ export default function RecorderMulti({
     supabaseRef.current = createClient(url, anon);
   }, []);
 
-  // ---- Détection feature‐safe (évite l’avertissement TS)
+  // ---- Détection feature‐safe
   useEffect(() => {
     let ok = false;
     if (typeof window !== "undefined" && typeof navigator !== "undefined") {
@@ -108,6 +108,7 @@ export default function RecorderMulti({
       const next = count + 1;
       const relativePath = `${consultationId}/seg-${next}.webm`; // chemin DANS le bucket
       const storagePath = `${bucket}/${relativePath}`;           // affichage friendly
+
       const { error } = await supabase.storage.from(bucket).upload(relativePath, blob, {
         contentType: "audio/webm",
         upsert: false,
@@ -132,22 +133,23 @@ export default function RecorderMulti({
   const removeLast = useCallback(async () => {
     const supabase = supabaseRef.current;
     if (!supabase) return;
+    if (segments.length === 0) return;
 
-    setSegments(async (prev) => {
-      if (prev.length === 0) return prev;
-      const last = prev[prev.length - 1];
+    const last = segments[segments.length - 1];
 
-      // last.storagePath = "audio/<id>/seg-X.webm" -> on retire "audio/"
-      const relative =
-        last.storagePath.startsWith(`${bucket}/`)
-          ? last.storagePath.slice(bucket.length + 1)
-          : last.storagePath;
+    // last.storagePath = "audio/<id>/seg-X.webm" -> retire "audio/"
+    const relative =
+      last.storagePath.startsWith(`${bucket}/`)
+        ? last.storagePath.slice(bucket.length + 1)
+        : last.storagePath;
 
-      await supabase.storage.from(bucket).remove([relative]);
-      setCount((n) => Math.max(0, n - 1));
-      return prev.slice(0, -1);
-    });
-  }, [bucket]);
+    // 1) on supprime dans Storage (await ici, pas dans setState)
+    await supabase.storage.from(bucket).remove([relative]);
+
+    // 2) puis on met à jour le state
+    setSegments((prev) => prev.slice(0, -1));
+    setCount((n) => Math.max(0, n - 1));
+  }, [bucket, segments]);
 
   return (
     <div>
@@ -196,3 +198,4 @@ export default function RecorderMulti({
     </div>
   );
 }
+
