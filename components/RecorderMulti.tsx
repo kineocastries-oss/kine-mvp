@@ -1,52 +1,56 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
-import { createClient, SupabaseClient } from "@supabase/supabase-js";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 
-type Props = {
+type RecorderMultiProps = {
   onChange?: (paths: string[]) => void;
-  /** dossier technique pour ranger les segments (ex: id de consultation) */
-  consultationId?: string;
-  /** nom du bucket Storage (par défaut "audio") */
-  bucket?: string;
-};
-
-type Segment = {
-  path: string;     // chemin Storage (ex: audio/<id>/seg-1.webm)
-  url?: string;     // URL signée (optionnel pour écoute locale)
-  size?: number;    // bytes
+  consultationId: string;
+  bucket: string;
 };
 
 export default function RecorderMulti({
   onChange,
   consultationId,
-  bucket = "audio",
-}: Props) {
-  const [supported, setSupported] = useState<boolean>(false);
-  const [recording, setRecording] = useState<boolean>(false);
-  const [segments, setSegments] = useState<Segment[]>([]);
-  const [counter, setCounter] = useState<number>(0);
+  bucket,
+}: RecorderMultiProps) {
+  const [recording, setRecording] = useState(false);
+  const [segments, setSegments] = useState<string[]>([]);
+  const [supported, setSupported] = useState(false);
+
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
 
-  // ---- Supabase client (client-side, anon) ----
-  const supabaseRef = useRef<SupabaseClient | null>(null);
+  // Vérifie le support navigateur
   useEffect(() => {
-    const url = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-    const anon = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
-    supabaseRef.current = createClient(url, anon);
+    if (typeof window !== "undefined" && navigator?.mediaDevices?.getUserMedia) {
+      setSupported(true);
+    }
   }, []);
 
-  // Vérifier support navigateur
-  useEffect(() => {
-    setSupported(typeof window !== "undefined" && !!navigator.mediaDevices && !!window.MediaRecorder);
-  }, []);
+  // Sauvegarde un segment dans Supabase (ou local pour test)
+  const saveSegment = useCallback(
+    async (blob: Blob) => {
+      const filename = `audio-${Date.now()}.webm`;
 
-  // Notifier le parent à chaque changement de liste
-  useEffect(() => {
-    onChange?.(segments.map((s) => s.path));
-  }, [segments, onChange]);
+      // Pour l’instant on fait un URL local
+      const url = URL.createObjectURL(blob);
+      setSegments((prev) => {
+        const updated = [...prev, url];
+        onChange?.(updated);
+        return updated;
+      });
 
+      // 🚨 si tu veux l’upload supabase, c’est ici
+      // const { error } = await supabase.storage.from(bucket).upload(
+      //   `${consultationId}/${filename}`, blob,
+      //   { contentType: "audio/webm" }
+      // );
+      // if (error) console.error("Upload error:", error);
+    },
+    [bucket, consultationId, onChange]
+  );
+
+  // Démarre l’enregistrement
   const startRecording = useCallback(async () => {
     if (!supported) return;
     try {
@@ -61,7 +65,6 @@ export default function RecorderMulti({
       mr.onstop = async () => {
         const blob = new Blob(chunksRef.current, { type: "audio/webm" });
         await saveSegment(blob);
-        // stop tracks
         stream.getTracks().forEach((t) => t.stop());
       };
 
@@ -69,102 +72,51 @@ export default function RecorderMulti({
       mr.start();
       setRecording(true);
     } catch (e) {
-      alert("Impossible d'accéder au micro : " + (e as any)?.message ?? e);
+      const msg = (e as any)?.message ?? String(e);
+      alert(`Impossible d'accéder au micro : ${msg}`);
     }
-  }, [supported]);
+  }, [supported, saveSegment]);
 
+  // Stoppe l’enregistrement
   const stopRecording = useCallback(() => {
-    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
-      mediaRecorderRef.current.stop();
-    }
+    mediaRecorderRef.current?.stop();
     setRecording(false);
   }, []);
 
-  const saveSegment = useCallback(async (blob: Blob) => {
-    const supabase = supabaseRef.current!;
-    const id = consultationId || "session";
-    const next = counter + 1;
-    const path = `${id}/seg-${next}.webm`; // chemin relatif DANS le bucket
-    const fullPath = `${bucket}/${path}`;  // affichage friendly
-
-    // Upload dans le bucket
-    const { error } = await supabase.storage.from(bucket).upload(path, blob, {
-      contentType: "audio/webm",
-      upsert: false,
-    });
-    if (error) {
-      alert("Upload audio échoué : " + error.message);
-      return;
-    }
-
-    // Optionnel: URL signée pour écoute immédiate (30 min)
-    const { data: signed } = await supabase.storage.from(bucket).createSignedUrl(path, 60 * 30);
-
-    setCounter(next);
-    setSegments((prev) => [
-      ...prev,
-      { path: `${bucket}/${path}`, url: signed?.signedUrl, size: blob.size },
-    ]);
-  }, [bucket, consultationId, counter]);
-
-  const removeLast = useCallback(async () => {
-    const supabase = supabaseRef.current!;
-    setSegments(async (prev) => {
-      if (prev.length === 0) return prev;
-      const last = prev[prev.length - 1];
-      // last.path est "audio/<id>/seg-X.webm" -> on enlève le prefix bucket + "/"
-      const relative = last.path.startsWith(`${bucket}/`)
-        ? last.path.slice(bucket.length + 1)
-        : last.path;
-      await supabase.storage.from(bucket).remove([relative]);
-      setCounter((n) => Math.max(0, n - 1));
-      return prev.slice(0, -1);
-    });
-  }, [bucket]);
-
   return (
-    <div>
+    <div className="flex flex-col gap-2">
       {!supported && (
-        <p style={{ color: "crimson" }}>
-          Votre navigateur ne supporte pas l’enregistrement audio (MediaRecorder).
+        <p className="text-red-500 text-sm">
+          Enregistrement audio non supporté sur ce navigateur.
         </p>
       )}
 
-      <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+      <div className="flex gap-2">
         {!recording ? (
-          <button onClick={startRecording} disabled={!supported}>
-            🎙️ Démarrer l’enregistrement
+          <button
+            type="button"
+            onClick={startRecording}
+            disabled={!supported}
+            className="bg-green-600 text-white px-3 py-1 rounded"
+          >
+            ▶️ Démarrer
           </button>
         ) : (
-          <button onClick={stopRecording}>⏹️ Arrêter</button>
+          <button
+            type="button"
+            onClick={stopRecording}
+            className="bg-red-600 text-white px-3 py-1 rounded"
+          >
+            ⏹️ Arrêter
+          </button>
         )}
-        <button onClick={removeLast} disabled={segments.length === 0}>
-          🧹 Supprimer le dernier segment
-        </button>
       </div>
 
-      <div style={{ fontSize: 14, color: "#555" }}>
-        Segments: <strong>{segments.length}</strong>
+      <div className="mt-2">
+        {segments.map((url, i) => (
+          <audio key={i} src={url} controls className="my-1 w-full" />
+        ))}
       </div>
-
-      {segments.length > 0 && (
-        <ul style={{ marginTop: 8 }}>
-          {segments.map((s, i) => (
-            <li key={s.path + i} style={{ wordBreak: "break-all" }}>
-              {s.path}
-              {s.url && (
-                <>
-                  {" "}
-                  —{" "}
-                  <audio controls src={s.url} style={{ verticalAlign: "middle" }}>
-                    Votre navigateur ne supporte pas la lecture audio.
-                  </audio>
-                </>
-              )}
-            </li>
-          ))}
-        </ul>
-      )}
     </div>
   );
 }
