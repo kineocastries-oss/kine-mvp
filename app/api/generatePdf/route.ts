@@ -220,20 +220,19 @@ async function sendEmail({
   const { sender } = assertEnv();
   const resend = new Resend(process.env.RESEND_API_KEY!);
 
-  await resend.emails.send({
-    from: sender!,
-    to,
-    subject,
-    html,
-    attachments: [
-      {
-        filename,
-        content: Buffer.from(pdfBytes).toString("base64"),
-        contentType: "application/pdf",
-      },
-    ],
-  });
-}
+ await resend.emails.send({
+  from: sender!,
+  to,
+  subject,
+  html,
+  attachments: [
+    {
+      filename,
+      content: Buffer.from(pdfBytes).toString("base64"),
+      content_type: "application/pdf", 
+    },
+  ],
+});
 
 /* ---------------------- Handler ---------------------- */
 export async function POST(req: NextRequest) {
