@@ -4,8 +4,7 @@ export const runtime = "nodejs";
 export const maxDuration = 60;
 
 import { createClient, SupabaseClient } from "@supabase/supabase-js";
-// @ts-ignore (pdfkit est en CJS)
-import PDFDocument from "pdfkit";
+import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
 
 /* ---------- Helpers ENV ---------- */
 function assertEnv() {
@@ -16,26 +15,17 @@ function assertEnv() {
   if (!url) missing.push("NEXT_PUBLIC_SUPABASE_URL");
   if (!anon) missing.push("NEXT_PUBLIC_SUPABASE_ANON_KEY");
   if (!service) missing.push("SUPABASE_SERVICE_ROLE_KEY");
-  if (missing.length) {
-    throw new Error(
-      `Variables d'environnement manquantes: ${missing.join(", ")}.`
-    );
-  }
+  if (missing.length) throw new Error(`Variables d'environnement manquantes: ${missing.join(", ")}.`);
   return { url, anon, service };
 }
 
 function getAdminClient(): SupabaseClient<any> {
   const { url, service } = assertEnv();
-  // On ne précise pas de schéma générique pour éviter les conflits de types
   return createClient<any>(url!, service!);
 }
 
-/** Accepte n'importe quel SupabaseClient pour éviter les conflits de types */
-async function downloadFromAudioBucket(
-  supabase: SupabaseClient<any>,
-  // p peut arriver sous forme "audio/<id>/seg-X.webm" OU "<id>/seg-X.webm"
-  p: string
-) {
+/** p peut être "audio/<id>/seg-X.webm" ou "<id>/seg-X.webm" */
+async function downloadFromAudioBucket(supabase: SupabaseClient<any>, p: string) {
   const relative = p.startsWith("audio/") ? p.slice("audio/".length) : p;
   const { data, error } = await supabase.storage.from("audio").download(relative);
   if (error) throw new Error(`Échec download "${relative}": ${error.message}`);
@@ -54,30 +44,83 @@ async function uploadPdfToPdfBucket(
   if (error) throw new Error(`Échec upload PDF "${path}": ${error.message}`);
 }
 
-function pdfKitToBuffer(doc: any): Promise<Uint8Array> {
-  return new Promise((resolve, reject) => {
-    const chunks: Buffer[] = [];
-    doc.on("data", (c: Buffer) => chunks.push(c));
-    doc.on("end", () => resolve(new Uint8Array(Buffer.concat(chunks))));
-    doc.on("error", reject);
-    doc.end();
+/* ---------- PDF via pdf-lib (aucune lecture de fichier) ---------- */
+async function createSimplePdfWithPdfLib(title: string, body: string) {
+  const pdfDoc = await PDFDocument.create();
+  const page = pdfDoc.addPage([595.28, 841.89]); // A4 en points (72 dpi)
+  const { width, height } = page.getSize();
+
+  const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
+  const fontBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
+
+  const margin = 40;
+  let x = margin;
+  let y = height - margin;
+
+  // Title
+  const titleSize = 18;
+  page.drawText(title || "Bilan kinésithérapique", {
+    x,
+    y,
+    size: titleSize,
+    font: fontBold,
+    color: rgb(0, 0, 0),
   });
+  y -= titleSize + 16;
+
+  // Body (très simple: une ligne = un paragraphe)
+  const bodySize = 11;
+  const maxWidth = width - margin * 2;
+  const lines = (body || "(contenu vide)").split("\n");
+
+  for (const line of lines) {
+    // découpe naïve: si la ligne est trop longue, on la casse (approx)
+    const words = line.split(" ");
+    let current = "";
+    const metrics = (s: string) => font.widthOfTextAtSize(s, bodySize);
+
+    for (const w of words) {
+      const test = current ? current + " " + w : w;
+      if (metrics(test) > maxWidth) {
+        page.drawText(current, { x, y, size: bodySize, font, color: rgb(0, 0, 0) });
+        y -= bodySize + 4;
+        current = w;
+      } else {
+        current = test;
+      }
+      if (y < margin + 40) {
+        // nouvelle page si on atteint le bas
+        const newPage = pdfDoc.addPage([595.28, 841.89]);
+        page.drawText("", { x: 0, y: 0 }); // force usage de 'page' précédent
+        page.setRotation(0 as any); // no-op
+        // reset coords
+        x = margin;
+        y = 841.89 - margin;
+      }
+    }
+    if (current) {
+      page.drawText(current, { x, y, size: bodySize, font, color: rgb(0, 0, 0) });
+      y -= bodySize + 8;
+    } else {
+      y -= bodySize + 8;
+    }
+  }
+
+  // Footer
+  const footer = "Consentement d’enregistrement recueilli. Audio supprimé après génération.";
+  page.drawText(footer, {
+    x: margin,
+    y: margin,
+    size: 8,
+    font,
+    color: rgb(0.2, 0.2, 0.2),
+  });
+
+  const bytes = await pdfDoc.save(); // Uint8Array
+  return bytes;
 }
 
-async function createSimplePdfWithPdfKit(title: string, body: string) {
-  const doc = new PDFDocument({
-    size: "A4",
-    margins: { top: 40, bottom: 40, left: 40, right: 40 },
-  });
-  doc.font("Helvetica-Bold").fontSize(18).text(title, { align: "left" });
-  doc.moveDown(1);
-  doc.font("Helvetica").fontSize(11).text(body || "(contenu vide)", {
-    align: "left",
-  });
-  return await pdfKitToBuffer(doc);
-}
-
-// Stubs simples (à remplacer par Whisper/GPT ensuite)
+// Stubs simples (remplace ensuite par Whisper/GPT)
 async function transcribeAll(_audioBuffers: Uint8Array[]) {
   return _audioBuffers.map((_, i) => `Transcription du segment ${i + 1}`).join("\n");
 }
@@ -100,20 +143,15 @@ export async function POST(req: NextRequest) {
   try {
     const supabase = getAdminClient();
 
-    const { consultationId, patientName, emailKine, emailPatient, audioPaths } =
-      await req.json();
+    const { consultationId, patientName, emailKine, emailPatient, audioPaths } = await req.json();
 
-    if (!consultationId) {
-      return NextResponse.json({ error: "consultationId manquant" }, { status: 400 });
-    }
-    if (!emailKine) {
-      return NextResponse.json({ error: "emailKine manquant" }, { status: 400 });
-    }
+    if (!consultationId) return NextResponse.json({ error: "consultationId manquant" }, { status: 400 });
+    if (!emailKine) return NextResponse.json({ error: "emailKine manquant" }, { status: 400 });
     if (!Array.isArray(audioPaths) || audioPaths.length === 0) {
       return NextResponse.json({ error: "Aucun segment audio fourni" }, { status: 400 });
     }
 
-    // 1) Download des segments (normalise les chemins)
+    // 1) Download des segments
     const audioBuffers: Uint8Array[] = [];
     for (const p of audioPaths) {
       try {
@@ -127,23 +165,17 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // 2) Transcription (stub)
+    // 2) Transcription
     const transcript = await transcribeAll(audioBuffers);
 
-    // 3) Synthèse (stub)
-    const reportText = await summarizeToReportText(
-      transcript,
-      patientName || "Patient"
-    );
+    // 3) Synthèse
+    const reportText = await summarizeToReportText(transcript, patientName || "Patient");
 
-    // 4) PDF
-    const pdfBytes = await createSimplePdfWithPdfKit(
-      "Bilan kinésithérapique",
-      reportText
-    );
+    // 4) PDF (pdf-lib)
+    const pdfBytes = await createSimplePdfWithPdfLib("Bilan kinésithérapique", reportText);
 
-    // 5) Upload PDF
-    const pdfPath = `pdf/${consultationId}.pdf`; // objet "pdf/..." dans bucket "pdf"
+    // 5) Upload dans le bucket "pdf"
+    const pdfPath = `pdf/${consultationId}.pdf`; // objet "pdf/..." dans le bucket "pdf"
     await uploadPdfToPdfBucket(supabase, pdfPath, pdfBytes);
 
     // 6) URL signée
@@ -163,16 +195,9 @@ export async function POST(req: NextRequest) {
       })
       .eq("id", consultationId);
 
-    return NextResponse.json({
-      ok: true,
-      pdfPath,
-      url: signed?.signedUrl,
-    });
+    return NextResponse.json({ ok: true, pdfPath, url: signed?.signedUrl });
   } catch (e: any) {
     console.error(e);
-    return NextResponse.json(
-      { error: e.message ?? "Erreur serveur" },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: e.message ?? "Erreur serveur" }, { status: 500 });
   }
 }
