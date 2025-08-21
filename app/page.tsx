@@ -1,90 +1,87 @@
 "use client";
 
-import { useState } from "react";
+import Link from "next/link";
 
-export default function NouveauBilanPage() {
-  const [consultationId, setConsultationId] = useState("demo123"); // à remplacer par ton vrai id
-  const [patientName, setPatientName] = useState("");
-  const [emailKine, setEmailKine] = useState("");
-  const [emailPatient, setEmailPatient] = useState("");
-  const [audioPaths, setAudioPaths] = useState<string[]>([]); // ex: ['audio/demo123/seg1.webm']
-  const [loading, setLoading] = useState(false);
-  const [reportUrl, setReportUrl] = useState<string | null>(null);
-
-  async function onGeneratePdf() {
-    try {
-      setLoading(true);
-      const res = await fetch("/api/generatePdf", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          consultationId,
-          patientName,
-          emailKine,
-          emailPatient: emailPatient || null,
-          audioPaths,
-        }),
-      });
-
-      const json = await res.json();
-      if (!res.ok) throw new Error(json.error || "Échec génération");
-
-      setReportUrl(json.url || null);
-      alert("✅ PDF généré avec succès !");
-    } catch (err: any) {
-      alert(err.message || "Erreur inconnue lors de la génération du PDF");
-    } finally {
-      setLoading(false);
-    }
-  }
-
+export default function Home() {
   return (
-    <main style={{ padding: "2rem" }}>
-      <h1>Nouveau Bilan 📝</h1>
-
-      <div style={{ marginBottom: "1rem" }}>
-        <label>Nom du patient : </label>
-        <input
-          value={patientName}
-          onChange={(e) => setPatientName(e.target.value)}
-          placeholder="Nom"
-          style={{ marginLeft: "0.5rem" }}
-        />
-      </div>
-
-      <div style={{ marginBottom: "1rem" }}>
-        <label>Email kiné (obligatoire) : </label>
-        <input
-          value={emailKine}
-          onChange={(e) => setEmailKine(e.target.value)}
-          placeholder="exemple@kine.fr"
-          style={{ marginLeft: "0.5rem" }}
-        />
-      </div>
-
-      <div style={{ marginBottom: "1rem" }}>
-        <label>Email patient (optionnel) : </label>
-        <input
-          value={emailPatient}
-          onChange={(e) => setEmailPatient(e.target.value)}
-          placeholder="exemple@patient.fr"
-          style={{ marginLeft: "0.5rem" }}
-        />
-      </div>
-
-      {/* Ici tu pourras ajouter ton composant RecorderMulti qui alimente audioPaths */}
-
-      <button onClick={onGeneratePdf} disabled={loading}>
-        {loading ? "⏳ Génération en cours..." : "📄 Générer PDF"}
-      </button>
-
-      {reportUrl && (
-        <p style={{ marginTop: "1rem" }}>
-          <a href={reportUrl} target="_blank" rel="noreferrer">
-            🔗 Télécharger le PDF
-          </a>
+    <main
+      style={{
+        padding: "2rem",
+        maxWidth: 900,
+        margin: "0 auto",
+        display: "grid",
+        gap: "1.5rem",
+      }}
+    >
+      {/* En-tête */}
+      <header style={{ display: "grid", gap: 8 }}>
+        <h1 style={{ margin: 0, fontSize: 32 }}>Bilan Kiné</h1>
+        <p style={{ margin: 0, color: "#555" }}>
+          Présentation de l’application <strong>GPT‑Kiné</strong> — enregistre l’entretien,
+          génère un bilan clair, et exporte le PDF.
         </p>
-      )}
+      </header>
+
+      {/* Bloc de présentation */}
+      <section
+        style={{
+          border: "1px solid #e5e7eb",
+          borderRadius: 12,
+          padding: 16,
+          background: "#fafafa",
+        }}
+      >
+        <h2 style={{ marginTop: 0, marginBottom: 8 }}>Présentation</h2>
+        <ul style={{ margin: 0, paddingLeft: 18, lineHeight: 1.6 }}>
+          <li>Enregistrement audio multi‑segments durant l’anamnèse.</li>
+          <li>Transcription &amp; synthèse automatique en français pro.</li>
+          <li>Génération d’un PDF structuré (anamnèse, examen, objectifs…).</li>
+          <li>Partage du bilan par e‑mail (kiné et patient).</li>
+        </ul>
+      </section>
+
+      {/* Appel à l’action */}
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 12,
+          justifyContent: "space-between",
+          border: "1px solid #e5e7eb",
+          borderRadius: 12,
+          padding: 16,
+        }}
+      >
+        <div>
+          <h3 style={{ margin: "0 0 6px 0" }}>Démarrer un nouveau bilan</h3>
+          <p style={{ margin: 0, color: "#666" }}>
+            Cliquez pour ouvrir l’interface d’enregistrement et de génération PDF.
+          </p>
+        </div>
+
+        <Link href="/nouveau-bilan">
+          <button
+            type="button"
+            style={{
+              padding: "10px 16px",
+              borderRadius: 8,
+              border: "1px solid #1d4ed8",
+              background: "#2563eb",
+              color: "white",
+              cursor: "pointer",
+              fontWeight: 600,
+            }}
+          >
+            🚀 Aller vers Nouveau Bilan
+          </button>
+        </Link>
+      </div>
+
+      {/* Pied de page mini */}
+      <footer style={{ color: "#888", fontSize: 12 }}>
+        GPT‑Kiné • MVP démo — Génération automatique de bilans à partir d’enregistrements.
+      </footer>
     </main>
   );
 }
+
