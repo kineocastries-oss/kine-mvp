@@ -1,7 +1,8 @@
 "use client";
 
 import { useCallback, useMemo, useState } from "react";
-import RecorderMulti from "@/composites/RecorderMulti"; // adapte le chemin si besoin
+import RecorderMulti from "../../components/RecorderMulti";
+
 
 export default function NouveauBilanPage() {
   // ---- Champs du formulaire
