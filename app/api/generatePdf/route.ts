@@ -3,8 +3,8 @@ import { NextRequest, NextResponse } from "next/server";
 export const runtime = "nodejs";
 export const maxDuration = 60;
 
-import { createClient } from "@supabase/supabase-js";
-// @ts-ignore (pdfkit export CJS)
+import { createClient, SupabaseClient } from "@supabase/supabase-js";
+// @ts-ignore (pdfkit est en CJS)
 import PDFDocument from "pdfkit";
 
 /* ---------- Helpers ENV ---------- */
@@ -24,13 +24,15 @@ function assertEnv() {
   return { url, anon, service };
 }
 
-function getAdminClient() {
+function getAdminClient(): SupabaseClient<any> {
   const { url, service } = assertEnv();
-  return createClient(url!, service!);
+  // On ne précise pas de schéma générique pour éviter les conflits de types
+  return createClient<any>(url!, service!);
 }
 
+/** Accepte n'importe quel SupabaseClient pour éviter les conflits de types */
 async function downloadFromAudioBucket(
-  supabase: ReturnType<typeof createClient>,
+  supabase: SupabaseClient<any>,
   // p peut arriver sous forme "audio/<id>/seg-X.webm" OU "<id>/seg-X.webm"
   p: string
 ) {
@@ -41,7 +43,7 @@ async function downloadFromAudioBucket(
 }
 
 async function uploadPdfToPdfBucket(
-  supabase: ReturnType<typeof createClient>,
+  supabase: SupabaseClient<any>,
   path: string,
   bytes: Uint8Array
 ) {
@@ -63,14 +65,19 @@ function pdfKitToBuffer(doc: any): Promise<Uint8Array> {
 }
 
 async function createSimplePdfWithPdfKit(title: string, body: string) {
-  const doc = new PDFDocument({ size: "A4", margins: { top: 40, bottom: 40, left: 40, right: 40 } });
+  const doc = new PDFDocument({
+    size: "A4",
+    margins: { top: 40, bottom: 40, left: 40, right: 40 },
+  });
   doc.font("Helvetica-Bold").fontSize(18).text(title, { align: "left" });
   doc.moveDown(1);
-  doc.font("Helvetica").fontSize(11).text(body || "(contenu vide)", { align: "left" });
+  doc.font("Helvetica").fontSize(11).text(body || "(contenu vide)", {
+    align: "left",
+  });
   return await pdfKitToBuffer(doc);
 }
 
-// Stubs (tu brancheras Whisper/GPT ici si besoin)
+// Stubs simples (à remplacer par Whisper/GPT ensuite)
 async function transcribeAll(_audioBuffers: Uint8Array[]) {
   return _audioBuffers.map((_, i) => `Transcription du segment ${i + 1}`).join("\n");
 }
@@ -93,7 +100,8 @@ export async function POST(req: NextRequest) {
   try {
     const supabase = getAdminClient();
 
-    const { consultationId, patientName, emailKine, emailPatient, audioPaths } = await req.json();
+    const { consultationId, patientName, emailKine, emailPatient, audioPaths } =
+      await req.json();
 
     if (!consultationId) {
       return NextResponse.json({ error: "consultationId manquant" }, { status: 400 });
@@ -106,7 +114,7 @@ export async function POST(req: NextRequest) {
     }
 
     // 1) Download des segments (normalise les chemins)
-    const audioBuffers = [];
+    const audioBuffers: Uint8Array[] = [];
     for (const p of audioPaths) {
       try {
         const buf = await downloadFromAudioBucket(supabase, p);
@@ -119,24 +127,32 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // 2) Transcription
+    // 2) Transcription (stub)
     const transcript = await transcribeAll(audioBuffers);
 
-    // 3) Synthèse
-    const reportText = await summarizeToReportText(transcript, patientName || "Patient");
+    // 3) Synthèse (stub)
+    const reportText = await summarizeToReportText(
+      transcript,
+      patientName || "Patient"
+    );
 
     // 4) PDF
-    const pdfBytes = await createSimplePdfWithPdfKit("Bilan kinésithérapique", reportText);
+    const pdfBytes = await createSimplePdfWithPdfKit(
+      "Bilan kinésithérapique",
+      reportText
+    );
 
     // 5) Upload PDF
-    const pdfPath = `pdf/${consultationId}.pdf`;
+    const pdfPath = `pdf/${consultationId}.pdf`; // objet "pdf/..." dans bucket "pdf"
     await uploadPdfToPdfBucket(supabase, pdfPath, pdfBytes);
 
     // 6) URL signée
-    const { data: signed, error: signErr } = await supabase.storage.from("pdf").createSignedUrl(pdfPath, 60 * 60);
+    const { data: signed, error: signErr } = await supabase.storage
+      .from("pdf")
+      .createSignedUrl(pdfPath, 60 * 60);
     if (signErr) throw new Error(`Échec URL signée: ${signErr.message}`);
 
-    // 7) (Optionnel) update DB
+    // (optionnel) 7) update DB
     await supabase
       .from("consultations")
       .update({
@@ -154,9 +170,9 @@ export async function POST(req: NextRequest) {
     });
   } catch (e: any) {
     console.error(e);
-    return NextResponse.json({ error: e.message ?? "Erreur serveur" }, { status: 500 });
+    return NextResponse.json(
+      { error: e.message ?? "Erreur serveur" },
+      { status: 500 }
+    );
   }
 }
-
-
-
