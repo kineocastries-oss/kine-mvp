@@ -6,6 +6,8 @@ export const maxDuration = 300;
 import { createClient, SupabaseClient } from "@supabase/supabase-js";
 import OpenAI from "openai";
 import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
+import { writeFileSync, unlinkSync, existsSync, mkdirSync, createReadStream } from "fs";
+import { join } from "path";
 
 /* ---------------------- ENV & clients ---------------------- */
 function assertEnv() {
@@ -21,9 +23,7 @@ function assertEnv() {
   if (!openaiKey) missing.push("OPENAI_API_KEY");
   if (!resendKey) missing.push("RESEND_API_KEY");
   if (!sender) missing.push("SENDER_EMAIL");
-  if (missing.length) {
-    throw new Error(`Variables d'environnement manquantes: ${missing.join(", ")}`);
-  }
+  if (missing.length) throw new Error(`Variables d'environnement manquantes: ${missing.join(", ")}`);
   return { url, service, openaiKey, resendKey, sender };
 }
 
@@ -34,7 +34,7 @@ function adminSupabase(): SupabaseClient<any> {
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY! });
 
-/* ---------------------- Helpers Storage ---------------------- */
+/* ---------------------- Helpers Storage & logs ---------------------- */
 const DEBUG = process.env.NODE_ENV !== "production" || process.env.DEBUG_LOGS === "1";
 const log = (...a: any[]) => { if (DEBUG) console.log("[generatePdf]", ...a); };
 
@@ -44,7 +44,8 @@ async function downloadAudio(supabase: SupabaseClient<any>, path: string): Promi
   const rel = normalizeAudioPath(path);
   const { data, error } = await supabase.storage.from("audio").download(rel);
   if (error) throw new Error(`Download fail "${rel}": ${error.message}`);
-  return new Uint8Array(await data.arrayBuffer());
+  const bytes = new Uint8Array(await data.arrayBuffer());
+  return bytes;
 }
 
 async function uploadPdf(supabase: SupabaseClient<any>, path: string, bytes: Uint8Array) {
@@ -61,27 +62,45 @@ async function signedPdfUrl(supabase: SupabaseClient<any>, path: string, ttlSeco
   return data!.signedUrl;
 }
 
-/* ---------------------- Transcription & Rendu ---------------------- */
+/* ---------------------- Transcription (robuste via /tmp) ---------------------- */
+function ensureTmpDir(): string {
+  const dir = "/tmp/kine-audio";
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
 async function transcribeSegments(buffers: Uint8Array[]) {
+  const tmpDir = ensureTmpDir();
   const parts: string[] = [];
+
   for (let i = 0; i < buffers.length; i++) {
+    const buf = buffers[i];
+    log(`Seg ${i + 1} size(bytes)=`, buf.length);
+
+    // écrit le segment en /tmp
+    const filename = `seg-${Date.now()}-${i + 1}.webm`;
+    const filePath = join(tmpDir, filename);
+    writeFileSync(filePath, Buffer.from(buf));
     try {
-      const f = new File([buffers[i]], `seg-${i + 1}.webm`, { type: "audio/webm" });
       const tr = await openai.audio.transcriptions.create({
-        file: f as any,
+        file: createReadStream(filePath) as any, // ReadStream fiable en serverless
         model: "whisper-1",
         language: "fr",
       });
-      const txt = (tr as any)?.text?.trim() || "";
-      log(`Whisper seg ${i + 1} len=`, txt.length);
+      const txt: string = (tr as any)?.text?.trim() || "";
+      log(`Whisper seg ${i + 1} text(len)=`, txt.length, txt.slice(0, 120).replace(/\n/g, " "));
       if (txt) parts.push(txt);
     } catch (e: any) {
       log(`Whisper error on seg ${i + 1}:`, e?.message || e);
+    } finally {
+      try { unlinkSync(filePath); } catch {}
     }
   }
+
   return parts.join("\n\n---\n\n");
 }
 
+/* ---------------------- Synthèse GPT & PDF ---------------------- */
 const SYSTEM_PROMPT = `Tu es un assistant clinique pour kinésithérapeute.
 Tu reçois une transcription brute d’un échange patient‑kiné.
 Produis un bilan clair et exploitable, en français professionnel, concis, sans diagnostic médical.
@@ -227,23 +246,28 @@ export async function POST(req: NextRequest) {
     // 1) Télécharger l'audio
     const audioBuffers: Uint8Array[] = [];
     for (const p of audioPaths) {
-      try { audioBuffers.push(await downloadAudio(supabase, p)); }
-      catch (e: any) {
+      try {
+        const buf = await downloadAudio(supabase, p);
+        audioBuffers.push(buf);
+      } catch (e: any) {
         return NextResponse.json(
           { error: `Téléchargement audio impossible (${p}) : ${e.message}` }, { status: 400 }
         );
       }
     }
 
-    // 2) Transcription
-    const transcript = await transcribeSegments(audioBuffers);
+    // 2) Transcription (robuste)
+    let transcript = await transcribeSegments(audioBuffers);
     log("Transcript head:", transcript.slice(0, 200).replace(/\n/g, " "));
-    if (!transcript.trim())
-      return NextResponse.json({ error: "Transcription vide. Vérifie l'audio / Whisper." }, { status: 400 });
+
+    // Fallback : si vide, on met quand même un message pour générer le PDF + envoi mail
+    if (!transcript.trim()) {
+      transcript = "(Transcription indisponible — audio reçu mais non reconnu par Whisper. Vérifier format/codec.)";
+    }
 
     // 3) Synthèse (GPT)
     const md = await generateReportMarkdown(transcript, patientName || "Patient");
-    const plain = stripMarkdown(md);
+    const plain = stripMarkdown(md || transcript); // si GPT renvoie vide, on met la transcription brute
 
     // 4) PDF
     const pdfBytes = await renderPdf(`Bilan kinésithérapique — ${patientName || "Patient"}`, plain);
