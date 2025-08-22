@@ -100,70 +100,71 @@ async function transcribeSegments(buffers: Uint8Array[]) {
   return parts.join("\n\n---\n\n");
 }
 
-/* ---------------------- Synthèse GPT & PDF ---------------------- */
-/** NOUVEAU PROMPT : texte final propre, sans Markdown, sans "NR", sections dynamiques et numérotées */
+/* ---------------------- Synthèse GPT & mise en page ---------------------- */
+/** PROMPT : sortie ligne-par-ligne, aérée, sans Markdown/placeholder, sections dynamiques & numérotées */
 const SYSTEM_PROMPT = `Tu es un assistant pour kinésithérapeute.
-Tu reçois une transcription brute d’un échange patient‑kiné.
-Objectif : produire un TEXTE FINAL en français professionnel, prêt à être posé tel quel dans un PDF.
+Tu reçois une transcription brute d’un échange patient-kiné.
+But : produire un TEXTE FINAL en français professionnel, AÉRÉ et LISIBLE, prêt à être posé tel quel dans un PDF.
 
-CONTRAINTES IMPÉRATIVES DE SORTIE :
+RÈGLES IMPÉRATIVES :
 - AUCUN Markdown (pas de #, ##, *, -, _).
-- PAS de placeholders ("NR", "N/A", "non renseigné").
-- N’AFFICHE QUE les lignes qui ont un contenu réel ; si une info manque, n’écris rien (supprime la ligne).
-- Omettre totalement une section si toutes ses lignes sont absentes.
-- Les sections présentes DOIVENT être numérotées 1., 2., 3., … de façon continue (pas de trous).
-- Style clair, professionnel, phrases courtes, lisibles.
+- PAS de placeholders ("NR", "N/A", "{...}", "[...]").
+- CHAQUE information doit être sur UNE LIGNE distincte.
+- Laisse UNE LIGNE VIDE entre chaque section.
+- Si une information est inconnue, SUPPRIME toute la ligne correspondante.
+- Si une section entière est vide, OMETS-LA complètement.
+- Numérotation stricte des sections : 1., 2., 3., … (continue, sans trous).
+- Style clair, phrases courtes, vocabulaire professionnel.
 
-STRUCTURE CIBLE EXACTE (n’inclus une ligne que si elle a un contenu réel dans la transcription) :
+MISE EN PAGE EXACTE À PRODUIRE (n’écris une ligne que si elle a un contenu réel) :
 
 Bilan kinésithérapique
 
 1. Informations patient
-Nom et prénom : {…}
-Âge : {…}
-Situation familiale : {…}
-Activité professionnelle : {…}
-Activités sociales et loisirs : {…}
-Antécédents médicaux importants : {…}
+Nom et prénom : …
+Âge : …
+Situation familiale : …
+Activité professionnelle : …
+Activités sociales et loisirs : …
+Antécédents médicaux importants : …
 
 2. Motif de consultation
-Raison de la venue : {…}
-Contexte d’apparition : {…}
-Examens complémentaires : {…}
-Parcours de soins déjà réalisé : {…}
+Raison de la venue : …
+Contexte d’apparition : …
+Examens complémentaires : …
+Parcours de soins déjà réalisé : …
 
 3. Évaluation clinique
-Douleur : {…}
-Incapacités fonctionnelles : {…}
-Observation clinique : {…}
-Tests spécifiques : {…}
-Facteurs aggravants ou de risque : {…}
+Douleur : …
+Incapacités fonctionnelles : …
+Observation clinique : …
+Tests spécifiques : …
+Facteurs aggravants ou de risque : …
 
 4. Explications données au patient
-Origine probable du trouble : {…}
-Lien avec son mode de vie ou antécédents : {…}
-Éléments de compréhension : {…}
+Origine probable du trouble : …
+Lien avec son mode de vie ou antécédents : …
+Éléments de compréhension : …
 
 5. Plan de traitement
-Objectifs principaux : {…}
-Techniques envisagées : {…}
-Fréquence et durée : {…}
+Objectifs principaux : …
+Techniques envisagées : …
+Fréquence et durée : …
 
 NOTES :
-- Réécris/condense les informations de la transcription pour remplir ces rubriques.
-- Si une section ne contient rien, supprime la section entière et renumérote les suivantes automatiquement.
-- Ne pas ajouter de “Mentions” en fin de texte (le PDF a déjà un pied de page).`;
+- Chaque rubrique commence par son titre de section sur UNE LIGNE DÉDIÉE.
+- Les informations de la rubrique sont chacune sur LEUR PROPRE LIGNE.
+- Une LIGNE VIDE sépare les sections.
+- Ne pas ajouter de “Mentions” à la fin (le pied de page du PDF les gère).`;
 
-async function generateReportMarkdown(transcript: string, patientName: string) {
+async function generateReportText(transcript: string, patientName: string) {
   const user = [
     `Patient: ${patientName || "Patient"}`,
     "",
-    "Transcription (FR):",
-    "```",
+    "Transcription (FR) :",
     transcript,
-    "```",
     "",
-    "Rédige le bilan FINAL au format demandé ci‑dessus.",
+    "Produis le texte final AU FORMAT IMPOSÉ ci-dessus."
   ].join("\n");
 
   const completion = await openai.chat.completions.create({
@@ -175,24 +176,28 @@ async function generateReportMarkdown(transcript: string, patientName: string) {
     ],
   });
 
-  const md = completion.choices[0]?.message?.content?.trim() || "";
-  log("GPT head:", md.slice(0, 200).replace(/\n/g, " "));
-  return md;
+  const txt = completion.choices[0]?.message?.content?.trim() || "";
+  log("GPT head:", txt.slice(0, 200).replace(/\n/g, " "));
+  return txt;
 }
 
-/** Nettoyage minimal (au cas où le modèle glisse encore un peu de markdown) */
+/** Nettoyage minimal (sécurité si un soupçon de markdown passe) */
 function stripMarkdown(md: string) {
   return md
     .replace(/^#{1,6}\s*/gm, "")      // titres markdown
     .replace(/\*\*(.*?)\*\*/g, "$1")  // gras
     .replace(/\*(.*?)\*/g, "$1")      // italique
     .replace(/`{1,3}([^`]+)`{1,3}/g, "$1") // code inline/blocs
-    // ❌ ne convertit plus "- " en "• " pour éviter toute puce non voulue
     .replace(/\r/g, "")
     .trim();
 }
 
-/** Rendu PDF simple (pdf-lib) : imprime le texte tel quel, avec un pied de page standard */
+/* ---------------------- Rendu PDF lisible & aéré ---------------------- */
+/**
+ * Respecte les sauts de ligne du texte (une info par ligne, une ligne vide entre sections).
+ * - Espacement vertical augmenté (taille + 10).
+ * - Détection simple des titres de sections (ex: "1. Informations patient") pour gras léger.
+ */
 async function renderPdf(title: string, body: string) {
   const pdfDoc = await PDFDocument.create();
   let page = pdfDoc.addPage([595.28, 841.89]); // A4
@@ -201,37 +206,68 @@ async function renderPdf(title: string, body: string) {
   const fontBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
 
   const margin = 40;
+  const lineSpacing = 10; // plus d'air
   let y = height - margin;
 
-  const drawLine = (text: string, size = 11, bold = false) => {
-    const f = bold ? fontBold : font;
-    page.drawText(text, { x: margin, y, size, font: f, color: rgb(0, 0, 0) });
-    y -= size + 6;
+  const maxWidth = width - margin * 2;
+
+  const ensureSpace = (size = 11) => {
     if (y < margin + 50) {
       page = pdfDoc.addPage([595.28, 841.89]);
       y = height - margin;
     }
   };
 
-  // Titre
-  drawLine(title || "Bilan kinésithérapique", 18, true);
-  y -= 6;
+  // Dessine une ligne (sans wrap)
+  const drawLineRaw = (text: string, size = 11, bold = false) => {
+    ensureSpace(size);
+    const f = bold ? fontBold : font;
+    page.drawText(text, { x: margin, y, size, font: f, color: rgb(0, 0, 0) });
+    y -= size + lineSpacing;
+  };
 
-  // Wrap simple
-  const size = 11;
-  const maxWidth = width - margin * 2;
-  const words = (body || "").split(/\s+/);
-  let current = "";
-  for (const w of words) {
-    const test = current ? current + " " + w : w;
-    if (font.widthOfTextAtSize(test, size) > maxWidth) {
-      if (current.trim()) drawLine(current, size, false);
-      current = w;
-    } else {
-      current = test;
+  // Wrap d'un paragraphe (en respectant les espaces)
+  const drawWrappedLine = (text: string, size = 11, bold = false) => {
+    const f = bold ? fontBold : font;
+    let current = "";
+    const words = text.split(/\s+/);
+    for (const w of words) {
+      const test = current ? current + " " + w : w;
+      if (f.widthOfTextAtSize(test, size) > maxWidth) {
+        if (current.trim()) drawLineRaw(current, size, bold);
+        current = w;
+      } else {
+        current = test;
+      }
     }
+    if (current.trim()) drawLineRaw(current, size, bold);
+  };
+
+  // Titre principal
+  drawWrappedLine(title || "Bilan kinésithérapique", 18, true);
+  y -= 2;
+
+  // On respecte les retours à la ligne du corps : une ligne du texte = un bloc à dessiner.
+  const lines = (body || "").split("\n");
+
+  for (let i = 0; i < lines.length; i++) {
+    const raw = lines[i] ?? "";
+    const line = raw.replace(/\s+$/g, ""); // trim right
+
+    // Ligne vide => espace supplémentaire (séparation sections)
+    if (!line.trim()) {
+      y -= 4; // petit gap en plus pour l'aération
+      continue;
+    }
+
+    // Détection simple d'un titre de section ("1. …", "2. …", etc.)
+    const isSectionTitle = /^\d+\.\s/.test(line);
+
+    // Taille un peu plus grande pour le 2. Motif..., 3. Évaluation..., etc. (optionnel)
+    const size = isSectionTitle ? 13 : 11;
+
+    drawWrappedLine(line, size, isSectionTitle);
   }
-  if (current.trim()) drawLine(current, size, false);
 
   // Pied de page (unique)
   page.drawText(
@@ -302,15 +338,14 @@ export async function POST(req: NextRequest) {
     let transcript = await transcribeSegments(audioBuffers);
     log("Transcript head:", transcript.slice(0, 200).replace(/\n/g, " "));
 
-    // Fallback : si vide, on met quand même un message pour générer le PDF + envoi mail
     if (!transcript.trim()) {
       transcript = "(Transcription indisponible — audio reçu mais non reconnu par Whisper. Vérifier format/codec.)";
     }
 
-    // 3) Synthèse (GPT) — texte final au format souhaité (sans markdown/NR)
-    const textFinal = stripMarkdown(await generateReportMarkdown(transcript, patientName || "Patient"));
+    // 3) Synthèse (GPT) — texte final au format souhaité (sans markdown/placeholder, avec lignes et sauts)
+    const textFinal = stripMarkdown(await generateReportText(transcript, patientName || "Patient"));
 
-    // 4) PDF
+    // 4) PDF (aéré & lisible)
     const pdfBytes = await renderPdf(`Bilan kinésithérapique — ${patientName || "Patient"}`, textFinal);
 
     // 5) Upload
