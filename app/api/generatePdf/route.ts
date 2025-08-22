@@ -101,18 +101,58 @@ async function transcribeSegments(buffers: Uint8Array[]) {
 }
 
 /* ---------------------- Synthèse GPT & PDF ---------------------- */
-const SYSTEM_PROMPT = `Tu es un assistant clinique pour kinésithérapeute.
+/** NOUVEAU PROMPT : texte final propre, sans Markdown, sans "NR", sections dynamiques et numérotées */
+const SYSTEM_PROMPT = `Tu es un assistant pour kinésithérapeute.
 Tu reçois une transcription brute d’un échange patient‑kiné.
-Produis un bilan clair et exploitable, en français professionnel, concis, sans diagnostic médical.
-Structure OBLIGATOIRE :
-# Anamnèse
-# Examen clinique
-# Diagnostic kiné (hypothèses argumentées)
-# Objectifs (court / moyen / long terme)
-# Plan de soins (techniques, fréquence, exercices à domicile)
-# Éducation thérapeutique (messages clés)
-# Suivi (critères, prochain RDV)
-À la fin, ajoute "Mentions : Consentement d’enregistrement recueilli."`;
+Objectif : produire un TEXTE FINAL en français professionnel, prêt à être posé tel quel dans un PDF.
+
+CONTRAINTES IMPÉRATIVES DE SORTIE :
+- AUCUN Markdown (pas de #, ##, *, -, _).
+- PAS de placeholders ("NR", "N/A", "non renseigné").
+- N’AFFICHE QUE les lignes qui ont un contenu réel ; si une info manque, n’écris rien (supprime la ligne).
+- Omettre totalement une section si toutes ses lignes sont absentes.
+- Les sections présentes DOIVENT être numérotées 1., 2., 3., … de façon continue (pas de trous).
+- Style clair, professionnel, phrases courtes, lisibles.
+
+STRUCTURE CIBLE EXACTE (n’inclus une ligne que si elle a un contenu réel dans la transcription) :
+
+Bilan kinésithérapique
+
+1. Informations patient
+Nom et prénom : {…}
+Âge : {…}
+Situation familiale : {…}
+Activité professionnelle : {…}
+Activités sociales et loisirs : {…}
+Antécédents médicaux importants : {…}
+
+2. Motif de consultation
+Raison de la venue : {…}
+Contexte d’apparition : {…}
+Examens complémentaires : {…}
+Parcours de soins déjà réalisé : {…}
+
+3. Évaluation clinique
+Douleur : {…}
+Incapacités fonctionnelles : {…}
+Observation clinique : {…}
+Tests spécifiques : {…}
+Facteurs aggravants ou de risque : {…}
+
+4. Explications données au patient
+Origine probable du trouble : {…}
+Lien avec son mode de vie ou antécédents : {…}
+Éléments de compréhension : {…}
+
+5. Plan de traitement
+Objectifs principaux : {…}
+Techniques envisagées : {…}
+Fréquence et durée : {…}
+
+NOTES :
+- Réécris/condense les informations de la transcription pour remplir ces rubriques.
+- Si une section ne contient rien, supprime la section entière et renumérote les suivantes automatiquement.
+- Ne pas ajouter de “Mentions” en fin de texte (le PDF a déjà un pied de page).`;
 
 async function generateReportMarkdown(transcript: string, patientName: string) {
   const user = [
@@ -123,7 +163,7 @@ async function generateReportMarkdown(transcript: string, patientName: string) {
     transcript,
     "```",
     "",
-    "Rédige le bilan complet (sections obligatoires, listes à puces où utile).",
+    "Rédige le bilan FINAL au format demandé ci‑dessus.",
   ].join("\n");
 
   const completion = await openai.chat.completions.create({
@@ -136,21 +176,23 @@ async function generateReportMarkdown(transcript: string, patientName: string) {
   });
 
   const md = completion.choices[0]?.message?.content?.trim() || "";
-  log("GPT md head:", md.slice(0, 200).replace(/\n/g, " "));
+  log("GPT head:", md.slice(0, 200).replace(/\n/g, " "));
   return md;
 }
 
+/** Nettoyage minimal (au cas où le modèle glisse encore un peu de markdown) */
 function stripMarkdown(md: string) {
   return md
-    .replace(/^#{1,6}\s*/gm, "")      // titres
-    .replace(/\*\*(.*?)\*\*/g, "$1")  // bold
-    .replace(/\*(.*?)\*/g, "$1")      // italic
-    .replace(/`{1,3}([^`]+)`{1,3}/g, "$1")
-    .replace(/^- /gm, "• ")
+    .replace(/^#{1,6}\s*/gm, "")      // titres markdown
+    .replace(/\*\*(.*?)\*\*/g, "$1")  // gras
+    .replace(/\*(.*?)\*/g, "$1")      // italique
+    .replace(/`{1,3}([^`]+)`{1,3}/g, "$1") // code inline/blocs
+    // ❌ ne convertit plus "- " en "• " pour éviter toute puce non voulue
     .replace(/\r/g, "")
     .trim();
 }
 
+/** Rendu PDF simple (pdf-lib) : imprime le texte tel quel, avec un pied de page standard */
 async function renderPdf(title: string, body: string) {
   const pdfDoc = await PDFDocument.create();
   let page = pdfDoc.addPage([595.28, 841.89]); // A4
@@ -159,11 +201,11 @@ async function renderPdf(title: string, body: string) {
   const fontBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
 
   const margin = 40;
-  let x = margin;
   let y = height - margin;
+
   const drawLine = (text: string, size = 11, bold = false) => {
     const f = bold ? fontBold : font;
-    page.drawText(text, { x, y, size, font: f, color: rgb(0, 0, 0) });
+    page.drawText(text, { x: margin, y, size, font: f, color: rgb(0, 0, 0) });
     y -= size + 6;
     if (y < margin + 50) {
       page = pdfDoc.addPage([595.28, 841.89]);
@@ -178,20 +220,20 @@ async function renderPdf(title: string, body: string) {
   // Wrap simple
   const size = 11;
   const maxWidth = width - margin * 2;
-  const words = body.split(/\s+/);
+  const words = (body || "").split(/\s+/);
   let current = "";
   for (const w of words) {
     const test = current ? current + " " + w : w;
     if (font.widthOfTextAtSize(test, size) > maxWidth) {
-      drawLine(current, size, false);
+      if (current.trim()) drawLine(current, size, false);
       current = w;
     } else {
       current = test;
     }
   }
-  if (current) drawLine(current, size, false);
+  if (current.trim()) drawLine(current, size, false);
 
-  // Pied de page
+  // Pied de page (unique)
   page.drawText(
     "Généré automatiquement. Mentions : Consentement d’enregistrement recueilli.",
     { x: margin, y: margin, size: 8, font, color: rgb(0.25, 0.25, 0.25) }
@@ -232,92 +274,5 @@ export async function POST(req: NextRequest) {
     const {
       consultationId,
       patientName,
-      emailKine,
-      emailPatient,
-      audioPaths,
-      sendEmailToKine = true,
-    } = await req.json();
 
-    if (!consultationId) return NextResponse.json({ error: "consultationId manquant" }, { status: 400 });
-    if (!emailKine)     return NextResponse.json({ error: "emailKine manquant" }, { status: 400 });
-    if (!Array.isArray(audioPaths) || audioPaths.length === 0)
-      return NextResponse.json({ error: "Aucun segment audio fourni" }, { status: 400 });
-
-    // 1) Télécharger l'audio
-    const audioBuffers: Uint8Array[] = [];
-    for (const p of audioPaths) {
-      try {
-        const buf = await downloadAudio(supabase, p);
-        audioBuffers.push(buf);
-      } catch (e: any) {
-        return NextResponse.json(
-          { error: `Téléchargement audio impossible (${p}) : ${e.message}` }, { status: 400 }
-        );
-      }
-    }
-
-    // 2) Transcription (robuste)
-    let transcript = await transcribeSegments(audioBuffers);
-    log("Transcript head:", transcript.slice(0, 200).replace(/\n/g, " "));
-
-    // Fallback : si vide, on met quand même un message pour générer le PDF + envoi mail
-    if (!transcript.trim()) {
-      transcript = "(Transcription indisponible — audio reçu mais non reconnu par Whisper. Vérifier format/codec.)";
-    }
-
-    // 3) Synthèse (GPT)
-    const md = await generateReportMarkdown(transcript, patientName || "Patient");
-    const plain = stripMarkdown(md || transcript); // si GPT renvoie vide, on met la transcription brute
-
-    // 4) PDF
-    const pdfBytes = await renderPdf(`Bilan kinésithérapique — ${patientName || "Patient"}`, plain);
-
-    // 5) Upload
-    const pdfPath = `pdf/${consultationId}.pdf`;
-    await uploadPdf(supabase, pdfPath, pdfBytes);
-
-    // 6) URL signée
-    const url = await signedPdfUrl(supabase, pdfPath, 3600);
-
-    // 7) Email
-    const recipients: string[] = [];
-    if (sendEmailToKine && emailKine) recipients.push(emailKine);
-    if (emailPatient) recipients.push(emailPatient);
-    if (recipients.length > 0) {
-      try {
-        await sendEmail({
-          to: recipients,
-          subject: `Bilan kinésithérapique — ${patientName || "Patient"}`,
-          html: [
-            "<p>Bonjour,</p>",
-            "<p>Veuillez trouver le bilan en pièce jointe.</p>",
-            `<p>Lien (valide 1h) : <a href="${url}">Télécharger le PDF</a></p>`,
-            "<p>— GPT‑Kiné</p>",
-          ].join(""),
-          pdfBytes,
-          filename: `Bilan-${(patientName || "Patient").replace(/\s+/g, "_")}.pdf`,
-        });
-      } catch (e: any) {
-        console.error("Resend email error:", e?.message || e);
-        // on ne bloque pas la réponse si l'email échoue
-      }
-    }
-
-    // 8) (Optionnel) update DB
-    await supabase
-      .from("consultations")
-      .update({
-        pdf_path: pdfPath,
-        status: "ready",
-        email_kine: emailKine,
-        email_patient: emailPatient ?? null,
-      })
-      .eq("id", consultationId);
-
-    return NextResponse.json({ ok: true, url, pdfPath, markdown: md });
-  } catch (e: any) {
-    console.error(e);
-    return NextResponse.json({ error: e.message || "Erreur serveur" }, { status: 500 });
-  }
-}
 
