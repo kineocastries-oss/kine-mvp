@@ -274,5 +274,60 @@ export async function POST(req: NextRequest) {
     const {
       consultationId,
       patientName,
+      emailKine,
+      emailPatient,
+      audioPaths,
+      sendEmailToKine = true,
+    } = await req.json();
+
+    if (!consultationId) return NextResponse.json({ error: "consultationId manquant" }, { status: 400 });
+    if (!emailKine)     return NextResponse.json({ error: "emailKine manquant" }, { status: 400 });
+    if (!Array.isArray(audioPaths) || audioPaths.length === 0)
+      return NextResponse.json({ error: "Aucun segment audio fourni" }, { status: 400 });
+
+    // 1) Télécharger l'audio
+    const audioBuffers: Uint8Array[] = [];
+    for (const p of audioPaths) {
+      try {
+        const buf = await downloadAudio(supabase, p);
+        audioBuffers.push(buf);
+      } catch (e: any) {
+        return NextResponse.json(
+          { error: `Téléchargement audio impossible (${p}) : ${e.message}` }, { status: 400 }
+        );
+      }
+    }
+
+    // 2) Transcription (robuste)
+    let transcript = await transcribeSegments(audioBuffers);
+    log("Transcript head:", transcript.slice(0, 200).replace(/\n/g, " "));
+
+    // Fallback : si vide, on met quand même un message pour générer le PDF + envoi mail
+    if (!transcript.trim()) {
+      transcript = "(Transcription indisponible — audio reçu mais non reconnu par Whisper. Vérifier format/codec.)";
+    }
+
+    // 3) Synthèse (GPT) — texte final au format souhaité (sans markdown/NR)
+    const textFinal = stripMarkdown(await generateReportMarkdown(transcript, patientName || "Patient"));
+
+    // 4) PDF
+    const pdfBytes = await renderPdf(`Bilan kinésithérapique — ${patientName || "Patient"}`, textFinal);
+
+    // 5) Upload
+    const pdfPath = `pdf/${consultationId}.pdf`;
+    await uploadPdf(supabase, pdfPath, pdfBytes);
+
+    // 6) URL signée
+    const url = await signedPdfUrl(supabase, pdfPath, 3600);
+
+    // 7) Email
+    const recipients: string[] = [];
+    if (sendEmailToKine && emailKine) recipients.push(emailKine);
+    if (emailPatient) recipients.push(emailPatient);
+    if (recipients.length > 0) {
+      try {
+        await sendEmail({
+          to: recipients,
+          subject: `Bilan
 
 
