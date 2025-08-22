@@ -56,8 +56,8 @@ async function uploadPdf(supabase: SupabaseClient<any>, path: string, bytes: Uin
   if (error) throw new Error(`Upload PDF fail "${path}": ${error.message}`);
 }
 
-async function signedPdfUrl(supabase: SupabaseClient<any>, path: string, ttlSeconds = 3600) {
-  const { data, error } = await supabase.storage.from("pdf").createSignedUrl(path, ttlSeconds);
+async function signedPdfUrl(sabase: SupabaseClient<any>, path: string, ttlSeconds = 3600) {
+  const { data, error } = await sabase.storage.from("pdf").createSignedUrl(path, ttlSeconds);
   if (error) throw new Error(`Signed URL fail: ${error.message}`);
   return data!.signedUrl;
 }
@@ -82,8 +82,8 @@ async function transcribeSegments(buffers: Uint8Array[]) {
     const filePath = join(tmpDir, filename);
     writeFileSync(filePath, Buffer.from(buf));
     try {
-      const tr = await openai.audio.transcriptions.create({
-        file: createReadStream(filePath) as any, // ReadStream fiable en serverless
+      const tr = await (openai as any).audio.transcriptions.create({
+        file: createReadStream(filePath) as any,
         model: "whisper-1",
         language: "fr",
       });
@@ -100,30 +100,70 @@ async function transcribeSegments(buffers: Uint8Array[]) {
   return parts.join("\n\n---\n\n");
 }
 
-/* ---------------------- Synthèse GPT & PDF ---------------------- */
-const SYSTEM_PROMPT = `Tu es un assistant clinique pour kinésithérapeute.
-Tu reçois une transcription brute d’un échange patient‑kiné.
-Produis un bilan clair et exploitable, en français professionnel, concis, sans diagnostic médical.
-Structure OBLIGATOIRE :
-# Anamnèse
-# Examen clinique
-# Diagnostic kiné (hypothèses argumentées)
-# Objectifs (court / moyen / long terme)
-# Plan de soins (techniques, fréquence, exercices à domicile)
-# Éducation thérapeutique (messages clés)
-# Suivi (critères, prochain RDV)
-À la fin, ajoute "Mentions : Consentement d’enregistrement recueilli."`;
+/* ---------------------- Synthèse GPT & mise en page ---------------------- */
+const SYSTEM_PROMPT = `Tu es un assistant pour kinésithérapeute.
+Tu reçois une transcription brute d’un échange patient-kiné.
+But : produire un TEXTE FINAL en français professionnel, AÉRÉ et LISIBLE, prêt à être posé tel quel dans un PDF.
 
-async function generateReportMarkdown(transcript: string, patientName: string) {
+RÈGLES IMPÉRATIVES :
+- AUCUN Markdown (pas de #, ##, *, -, _).
+- PAS de placeholders ni points de suspension ("NR", "N/A", "{...}", "[...]", "…", "...").
+- CHAQUE information doit être sur UNE LIGNE distincte.
+- Laisse UNE LIGNE VIDE entre chaque section.
+- Si une information est inconnue, SUPPRIME la ligne entière (n’écris rien à sa place).
+- Si une section entière est vide, OMETS-LA complètement.
+- Numérotation stricte des sections : 1., 2., 3., … (continue, sans trous).
+- Style clair, phrases courtes, vocabulaire professionnel.
+
+MISE EN PAGE EXACTE À PRODUIRE (n’écris une ligne que si elle a un contenu réel) :
+
+Bilan kinésithérapique
+
+1. Informations patient
+Nom et prénom : …
+Âge : …
+Situation familiale : …
+Activité professionnelle : …
+Activités sociales et loisirs : …
+Antécédents médicaux importants : …
+
+2. Motif de consultation
+Raison de la venue : …
+Contexte d’apparition : …
+Examens complémentaires : …
+Parcours de soins déjà réalisé : …
+
+3. Évaluation clinique
+Douleur : …
+Incapacités fonctionnelles : …
+Observation clinique : …
+Tests spécifiques : …
+Facteurs aggravants ou de risque : …
+
+4. Explications données au patient
+Origine probable du trouble : …
+Lien avec son mode de vie ou antécédents : …
+Éléments de compréhension : …
+
+5. Plan de traitement
+Objectifs principaux : …
+Techniques envisagées : …
+Fréquence et durée : …
+
+NOTES :
+- Chaque rubrique commence par son titre de section sur UNE LIGNE DÉDIÉE.
+- Les informations de la rubrique sont chacune sur LEUR PROPRE LIGNE.
+- Une LIGNE VIDE sépare les sections.
+- N’ajoute aucune mention finale (le pied de page du PDF les gère).`;
+
+async function generateReportText(transcript: string, patientName: string) {
   const user = [
     `Patient: ${patientName || "Patient"}`,
     "",
-    "Transcription (FR):",
-    "```",
+    "Transcription (FR) :",
     transcript,
-    "```",
     "",
-    "Rédige le bilan complet (sections obligatoires, listes à puces où utile).",
+    "Produis le texte final AU FORMAT IMPOSÉ ci-dessus."
   ].join("\n");
 
   const completion = await openai.chat.completions.create({
@@ -135,22 +175,78 @@ async function generateReportMarkdown(transcript: string, patientName: string) {
     ],
   });
 
-  const md = completion.choices[0]?.message?.content?.trim() || "";
-  log("GPT md head:", md.slice(0, 200).replace(/\n/g, " "));
-  return md;
+  const txt = completion.choices[0]?.message?.content?.trim() || "";
+  log("GPT head:", txt.slice(0, 200).replace(/\n/g, " "));
+  return txt;
 }
 
 function stripMarkdown(md: string) {
   return md
-    .replace(/^#{1,6}\s*/gm, "")      // titres
-    .replace(/\*\*(.*?)\*\*/g, "$1")  // bold
-    .replace(/\*(.*?)\*/g, "$1")      // italic
+    .replace(/^#{1,6}\s*/gm, "")
+    .replace(/\*\*(.*?)\*\*/g, "$1")
+    .replace(/\*(.*?)\*/g, "$1")
     .replace(/`{1,3}([^`]+)`{1,3}/g, "$1")
-    .replace(/^- /gm, "• ")
     .replace(/\r/g, "")
     .trim();
 }
 
+/** Supprime lignes incomplètes, sections vides, et renumérote 1., 2., 3., … */
+function cleanAndRenumberBilan(raw: string): string {
+  const lines = (raw || "").split("\n");
+
+  // Garde l'en‑tête si présent
+  let header = "";
+  if (lines.length && lines[0].trim().toLowerCase().startsWith("bilan kinésithérapique")) {
+    header = "Bilan kinésithérapique";
+    lines.shift();
+  }
+
+  const sections: { title: string; items: string[] }[] = [];
+  let current: { title: string; items: string[] } | null = null;
+  const isSectionTitle = (s: string) => /^\d+\.\s/.test(s.trim());
+  const isEmptyItem = (s: string) => {
+    const t = s.trim();
+    if (!t) return true;
+    const m = t.match(/^([^:]+):\s*(.*)$/);
+    if (!m) return false;
+    const val = m[2].trim();
+    if (!val) return true;
+    if (val === "…" || val === "...") return true;
+    if (/^\.{2,}$/.test(val)) return true;
+    return false;
+  };
+
+  for (const rawLine of lines) {
+    const line = rawLine.replace(/\s+$/g, "");
+    if (!line.trim()) continue;
+    if (isSectionTitle(line)) {
+      if (current) sections.push(current);
+      current = { title: line.trim(), items: [] };
+    } else {
+      if (!current) continue;
+      if (!isEmptyItem(line)) current.items.push(line.trim());
+    }
+  }
+  if (current) sections.push(current);
+
+  const kept = sections.filter(s => s.items.length > 0);
+  kept.forEach((s, idx) => {
+    const titleNoNum = s.title.replace(/^\d+\.\s*/, "");
+    s.title = `${idx + 1}. ${titleNoNum}`;
+  });
+
+  const out: string[] = [];
+  if (header) out.push(header, "");
+  kept.forEach((s, i) => {
+    out.push(s.title);
+    s.items.forEach(it => out.push(it));
+    if (i < kept.length - 1) out.push("");
+  });
+
+  return out.join("\n");
+}
+
+/* ---------------------- Rendu PDF lisible & aéré ---------------------- */
 async function renderPdf(title: string, body: string) {
   const pdfDoc = await PDFDocument.create();
   let page = pdfDoc.addPage([595.28, 841.89]); // A4
@@ -159,37 +255,53 @@ async function renderPdf(title: string, body: string) {
   const fontBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
 
   const margin = 40;
-  let x = margin;
+  const lineSpacing = 10;
   let y = height - margin;
-  const drawLine = (text: string, size = 11, bold = false) => {
-    const f = bold ? fontBold : font;
-    page.drawText(text, { x, y, size, font: f, color: rgb(0, 0, 0) });
-    y -= size + 6;
+  const maxWidth = width - margin * 2;
+
+  const ensureSpace = (size = 11) => {
     if (y < margin + 50) {
       page = pdfDoc.addPage([595.28, 841.89]);
       y = height - margin;
     }
   };
 
-  // Titre
-  drawLine(title || "Bilan kinésithérapique", 18, true);
-  y -= 6;
+  const drawLineRaw = (text: string, size = 11, bold = false) => {
+    ensureSpace(size);
+    const f = bold ? fontBold : font;
+    page.drawText(text, { x: margin, y, size, font: f, color: rgb(0, 0, 0) });
+    y -= size + lineSpacing;
+  };
 
-  // Wrap simple
-  const size = 11;
-  const maxWidth = width - margin * 2;
-  const words = body.split(/\s+/);
-  let current = "";
-  for (const w of words) {
-    const test = current ? current + " " + w : w;
-    if (font.widthOfTextAtSize(test, size) > maxWidth) {
-      drawLine(current, size, false);
-      current = w;
-    } else {
-      current = test;
+  const drawWrappedLine = (text: string, size = 11, bold = false) => {
+    const f = bold ? fontBold : font;
+    let current = "";
+    const words = text.split(/\s+/);
+    for (const w of words) {
+      const test = current ? current + " " + w : w;
+      if (f.widthOfTextAtSize(test, size) > maxWidth) {
+        if (current.trim()) drawLineRaw(current, size, bold);
+        current = w;
+      } else {
+        current = test;
+      }
     }
+    if (current.trim()) drawLineRaw(current, size, bold);
+  };
+
+  // Titre principal
+  drawWrappedLine(title || "Bilan kinésithérapique", 18, true);
+  y -= 2;
+
+  // Corps (ligne par ligne)
+  const lines = (body || "").split("\n");
+  for (const raw of lines) {
+    const line = raw.replace(/\s+$/g, "");
+    if (!line.trim()) { y -= 4; continue; }
+    const isSectionTitle = /^\d+\.\s/.test(line);
+    const size = isSectionTitle ? 13 : 11;
+    drawWrappedLine(line, size, isSectionTitle);
   }
-  if (current) drawLine(current, size, false);
 
   // Pied de page
   page.drawText(
@@ -256,21 +368,19 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // 2) Transcription (robuste)
+    // 2) Transcription
     let transcript = await transcribeSegments(audioBuffers);
     log("Transcript head:", transcript.slice(0, 200).replace(/\n/g, " "));
-
-    // Fallback : si vide, on met quand même un message pour générer le PDF + envoi mail
     if (!transcript.trim()) {
       transcript = "(Transcription indisponible — audio reçu mais non reconnu par Whisper. Vérifier format/codec.)";
     }
 
-    // 3) Synthèse (GPT)
-    const md = await generateReportMarkdown(transcript, patientName || "Patient");
-    const plain = stripMarkdown(md || transcript); // si GPT renvoie vide, on met la transcription brute
+    // 3) Synthèse (GPT) → texte formaté
+    const fromGpt = await generateReportText(transcript, patientName || "Patient");
+    const cleaned = cleanAndRenumberBilan(stripMarkdown(fromGpt));
 
     // 4) PDF
-    const pdfBytes = await renderPdf(`Bilan kinésithérapique — ${patientName || "Patient"}`, plain);
+    const pdfBytes = await renderPdf(`Bilan kinésithérapique — ${patientName || "Patient"}`, cleaned);
 
     // 5) Upload
     const pdfPath = `pdf/${consultationId}.pdf`;
@@ -292,18 +402,17 @@ export async function POST(req: NextRequest) {
             "<p>Bonjour,</p>",
             "<p>Veuillez trouver le bilan en pièce jointe.</p>",
             `<p>Lien (valide 1h) : <a href="${url}">Télécharger le PDF</a></p>`,
-            "<p>— GPT‑Kiné</p>",
+            "<p>— GPT‑Kiné</p>"
           ].join(""),
           pdfBytes,
           filename: `Bilan-${(patientName || "Patient").replace(/\s+/g, "_")}.pdf`,
         });
       } catch (e: any) {
         console.error("Resend email error:", e?.message || e);
-        // on ne bloque pas la réponse si l'email échoue
       }
     }
 
-    // 8) (Optionnel) update DB
+    // 8) Update DB
     await supabase
       .from("consultations")
       .update({
@@ -314,10 +423,11 @@ export async function POST(req: NextRequest) {
       })
       .eq("id", consultationId);
 
-    return NextResponse.json({ ok: true, url, pdfPath, markdown: md });
+    return NextResponse.json({ ok: true, url, pdfPath });
   } catch (e: any) {
     console.error(e);
     return NextResponse.json({ error: e.message || "Erreur serveur" }, { status: 500 });
   }
 }
+
 
