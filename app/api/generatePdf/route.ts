@@ -56,8 +56,8 @@ async function uploadPdf(supabase: SupabaseClient<any>, path: string, bytes: Uin
   if (error) throw new Error(`Upload PDF fail "${path}": ${error.message}`);
 }
 
-async function signedPdfUrl(supabase: SupabaseClient<any>, path: string, ttlSeconds = 3600) {
-  const { data, error } = await supabase.storage.from("pdf").createSignedUrl(path, ttlSeconds);
+async function signedPdfUrl(sabase: SupabaseClient<any>, path: string, ttlSeconds = 3600) {
+  const { data, error } = await sabase.storage.from("pdf").createSignedUrl(path, ttlSeconds);
   if (error) throw new Error(`Signed URL fail: ${error.message}`);
   return data!.signedUrl;
 }
@@ -83,7 +83,7 @@ async function transcribeSegments(buffers: Uint8Array[]) {
     writeFileSync(filePath, Buffer.from(buf));
     try {
       const tr = await (openai as any).audio.transcriptions.create({
-        file: createReadStream(filePath) as any, // ReadStream fiable en serverless
+        file: createReadStream(filePath) as any,
         model: "whisper-1",
         language: "fr",
       });
@@ -101,17 +101,16 @@ async function transcribeSegments(buffers: Uint8Array[]) {
 }
 
 /* ---------------------- Synthèse GPT & mise en page ---------------------- */
-/** PROMPT : sortie ligne-par-ligne, aérée, sans Markdown/placeholder, sections dynamiques & numérotées */
 const SYSTEM_PROMPT = `Tu es un assistant pour kinésithérapeute.
 Tu reçois une transcription brute d’un échange patient-kiné.
 But : produire un TEXTE FINAL en français professionnel, AÉRÉ et LISIBLE, prêt à être posé tel quel dans un PDF.
 
 RÈGLES IMPÉRATIVES :
 - AUCUN Markdown (pas de #, ##, *, -, _).
-- PAS de placeholders ("NR", "N/A", "{...}", "[...]").
+- PAS de placeholders ni points de suspension ("NR", "N/A", "{...}", "[...]", "…", "...").
 - CHAQUE information doit être sur UNE LIGNE distincte.
 - Laisse UNE LIGNE VIDE entre chaque section.
-- Si une information est inconnue, SUPPRIME toute la ligne correspondante.
+- Si une information est inconnue, SUPPRIME la ligne entière (n’écris rien à sa place).
 - Si une section entière est vide, OMETS-LA complètement.
 - Numérotation stricte des sections : 1., 2., 3., … (continue, sans trous).
 - Style clair, phrases courtes, vocabulaire professionnel.
@@ -155,7 +154,7 @@ NOTES :
 - Chaque rubrique commence par son titre de section sur UNE LIGNE DÉDIÉE.
 - Les informations de la rubrique sont chacune sur LEUR PROPRE LIGNE.
 - Une LIGNE VIDE sépare les sections.
-- Ne pas ajouter de “Mentions” à la fin (le pied de page du PDF les gère).`;
+- N’ajoute aucune mention finale (le pied de page du PDF les gère).`;
 
 async function generateReportText(transcript: string, patientName: string) {
   const user = [
@@ -181,23 +180,73 @@ async function generateReportText(transcript: string, patientName: string) {
   return txt;
 }
 
-/** Nettoyage minimal (sécurité si un soupçon de markdown passe) */
 function stripMarkdown(md: string) {
   return md
-    .replace(/^#{1,6}\s*/gm, "")      // titres markdown
-    .replace(/\*\*(.*?)\*\*/g, "$1")  // gras
-    .replace(/\*(.*?)\*/g, "$1")      // italique
-    .replace(/`{1,3}([^`]+)`{1,3}/g, "$1") // code inline/blocs
+    .replace(/^#{1,6}\s*/gm, "")
+    .replace(/\*\*(.*?)\*\*/g, "$1")
+    .replace(/\*(.*?)\*/g, "$1")
+    .replace(/`{1,3}([^`]+)`{1,3}/g, "$1")
     .replace(/\r/g, "")
     .trim();
 }
 
+/** Supprime lignes incomplètes, sections vides, et renumérote 1., 2., 3., … */
+function cleanAndRenumberBilan(raw: string): string {
+  const lines = (raw || "").split("\n");
+
+  // Garde l'en‑tête si présent
+  let header = "";
+  if (lines.length && lines[0].trim().toLowerCase().startsWith("bilan kinésithérapique")) {
+    header = "Bilan kinésithérapique";
+    lines.shift();
+  }
+
+  const sections: { title: string; items: string[] }[] = [];
+  let current: { title: string; items: string[] } | null = null;
+  const isSectionTitle = (s: string) => /^\d+\.\s/.test(s.trim());
+  const isEmptyItem = (s: string) => {
+    const t = s.trim();
+    if (!t) return true;
+    const m = t.match(/^([^:]+):\s*(.*)$/);
+    if (!m) return false;
+    const val = m[2].trim();
+    if (!val) return true;
+    if (val === "…" || val === "...") return true;
+    if (/^\.{2,}$/.test(val)) return true;
+    return false;
+  };
+
+  for (const rawLine of lines) {
+    const line = rawLine.replace(/\s+$/g, "");
+    if (!line.trim()) continue;
+    if (isSectionTitle(line)) {
+      if (current) sections.push(current);
+      current = { title: line.trim(), items: [] };
+    } else {
+      if (!current) continue;
+      if (!isEmptyItem(line)) current.items.push(line.trim());
+    }
+  }
+  if (current) sections.push(current);
+
+  const kept = sections.filter(s => s.items.length > 0);
+  kept.forEach((s, idx) => {
+    const titleNoNum = s.title.replace(/^\d+\.\s*/, "");
+    s.title = `${idx + 1}. ${titleNoNum}`;
+  });
+
+  const out: string[] = [];
+  if (header) out.push(header, "");
+  kept.forEach((s, i) => {
+    out.push(s.title);
+    s.items.forEach(it => out.push(it));
+    if (i < kept.length - 1) out.push("");
+  });
+
+  return out.join("\n");
+}
+
 /* ---------------------- Rendu PDF lisible & aéré ---------------------- */
-/**
- * Respecte les sauts de ligne du texte (une info par ligne, une ligne vide entre sections).
- * - Espacement vertical augmenté (taille + 10).
- * - Détection simple des titres de sections (ex: "1. Informations patient") pour gras léger.
- */
 async function renderPdf(title: string, body: string) {
   const pdfDoc = await PDFDocument.create();
   let page = pdfDoc.addPage([595.28, 841.89]); // A4
@@ -206,9 +255,8 @@ async function renderPdf(title: string, body: string) {
   const fontBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
 
   const margin = 40;
-  const lineSpacing = 10; // plus d'air
+  const lineSpacing = 10;
   let y = height - margin;
-
   const maxWidth = width - margin * 2;
 
   const ensureSpace = (size = 11) => {
@@ -218,7 +266,6 @@ async function renderPdf(title: string, body: string) {
     }
   };
 
-  // Dessine une ligne (sans wrap)
   const drawLineRaw = (text: string, size = 11, bold = false) => {
     ensureSpace(size);
     const f = bold ? fontBold : font;
@@ -226,7 +273,6 @@ async function renderPdf(title: string, body: string) {
     y -= size + lineSpacing;
   };
 
-  // Wrap d'un paragraphe (en respectant les espaces)
   const drawWrappedLine = (text: string, size = 11, bold = false) => {
     const f = bold ? fontBold : font;
     let current = "";
@@ -247,29 +293,17 @@ async function renderPdf(title: string, body: string) {
   drawWrappedLine(title || "Bilan kinésithérapique", 18, true);
   y -= 2;
 
-  // On respecte les retours à la ligne du corps : une ligne du texte = un bloc à dessiner.
+  // Corps (ligne par ligne)
   const lines = (body || "").split("\n");
-
-  for (let i = 0; i < lines.length; i++) {
-    const raw = lines[i] ?? "";
-    const line = raw.replace(/\s+$/g, ""); // trim right
-
-    // Ligne vide => espace supplémentaire (séparation sections)
-    if (!line.trim()) {
-      y -= 4; // petit gap en plus pour l'aération
-      continue;
-    }
-
-    // Détection simple d'un titre de section ("1. …", "2. …", etc.)
+  for (const raw of lines) {
+    const line = raw.replace(/\s+$/g, "");
+    if (!line.trim()) { y -= 4; continue; }
     const isSectionTitle = /^\d+\.\s/.test(line);
-
-    // Taille un peu plus grande pour le 2. Motif..., 3. Évaluation..., etc. (optionnel)
     const size = isSectionTitle ? 13 : 11;
-
     drawWrappedLine(line, size, isSectionTitle);
   }
 
-  // Pied de page (unique)
+  // Pied de page
   page.drawText(
     "Généré automatiquement. Mentions : Consentement d’enregistrement recueilli.",
     { x: margin, y: margin, size: 8, font, color: rgb(0.25, 0.25, 0.25) }
@@ -334,19 +368,19 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // 2) Transcription (robuste)
+    // 2) Transcription
     let transcript = await transcribeSegments(audioBuffers);
     log("Transcript head:", transcript.slice(0, 200).replace(/\n/g, " "));
-
     if (!transcript.trim()) {
       transcript = "(Transcription indisponible — audio reçu mais non reconnu par Whisper. Vérifier format/codec.)";
     }
 
-    // 3) Synthèse (GPT) — texte final au format souhaité (sans markdown/placeholder, avec lignes et sauts)
-    const textFinal = stripMarkdown(await generateReportText(transcript, patientName || "Patient"));
+    // 3) Synthèse (GPT) → texte formaté
+    const fromGpt = await generateReportText(transcript, patientName || "Patient");
+    const cleaned = cleanAndRenumberBilan(stripMarkdown(fromGpt));
 
-    // 4) PDF (aéré & lisible)
-    const pdfBytes = await renderPdf(`Bilan kinésithérapique — ${patientName || "Patient"}`, textFinal);
+    // 4) PDF
+    const pdfBytes = await renderPdf(`Bilan kinésithérapique — ${patientName || "Patient"}`, cleaned);
 
     // 5) Upload
     const pdfPath = `pdf/${consultationId}.pdf`;
@@ -375,11 +409,10 @@ export async function POST(req: NextRequest) {
         });
       } catch (e: any) {
         console.error("Resend email error:", e?.message || e);
-        // on ne bloque pas la réponse si l'email échoue
       }
     }
 
-    // 8) (Optionnel) update DB
+    // 8) Update DB
     await supabase
       .from("consultations")
       .update({
