@@ -82,7 +82,7 @@ async function transcribeSegments(buffers: Uint8Array[]) {
     const filePath = join(tmpDir, filename);
     writeFileSync(filePath, Buffer.from(buf));
     try {
-      const tr = await openai.audio.transcriptions.create({
+      const tr = await (openai as any).audio.transcriptions.create({
         file: createReadStream(filePath) as any, // ReadStream fiable en serverless
         model: "whisper-1",
         language: "fr",
@@ -328,6 +328,38 @@ export async function POST(req: NextRequest) {
       try {
         await sendEmail({
           to: recipients,
-          subject: `Bilan
+          subject: `Bilan kinésithérapique — ${patientName || "Patient"}`,
+          html: [
+            "<p>Bonjour,</p>",
+            "<p>Veuillez trouver le bilan en pièce jointe.</p>",
+            `<p>Lien (valide 1h) : <a href="${url}">Télécharger le PDF</a></p>`,
+            "<p>— GPT‑Kiné</p>"
+          ].join(""),
+          pdfBytes,
+          filename: `Bilan-${(patientName || "Patient").replace(/\s+/g, "_")}.pdf`,
+        });
+      } catch (e: any) {
+        console.error("Resend email error:", e?.message || e);
+        // on ne bloque pas la réponse si l'email échoue
+      }
+    }
+
+    // 8) (Optionnel) update DB
+    await supabase
+      .from("consultations")
+      .update({
+        pdf_path: pdfPath,
+        status: "ready",
+        email_kine: emailKine,
+        email_patient: emailPatient ?? null,
+      })
+      .eq("id", consultationId);
+
+    return NextResponse.json({ ok: true, url, pdfPath });
+  } catch (e: any) {
+    console.error(e);
+    return NextResponse.json({ error: e.message || "Erreur serveur" }, { status: 500 });
+  }
+}
 
 
