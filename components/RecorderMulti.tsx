@@ -25,8 +25,8 @@ export default function RecorderMulti({
   const [supported, setSupported] = useState<boolean>(false);
   const [recording, setRecording] = useState<boolean>(false);
   const [segments, setSegments] = useState<Segment[]>([]);
-  const [count, setCount] = useState<number>(0);
   const [elapsedMs, setElapsedMs] = useState<number>(0);
+  const [uploading, setUploading] = useState<boolean>(false);
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
@@ -92,8 +92,30 @@ export default function RecorderMulti({
     return `${m}:${s}`;
   };
 
+  /** Récupère le prochain index libre dans le dossier Storage (robuste même après refresh) */
+  const getNextIndex = useCallback(async (): Promise<number> => {
+    const supabase = supabaseRef.current;
+    if (!supabase) return 1;
+
+    const { data, error } = await supabase.storage.from(bucket).list(consultationId);
+    if (error) {
+      console.warn("list() Storage a échoué, fallback segments.length+1", error.message);
+      return segments.length + 1;
+    }
+    let max = 0;
+    for (const f of data || []) {
+      // f.name ex: "seg-2.webm"
+      const m = /^seg-(\d+)\.webm$/.exec(f.name);
+      if (m) {
+        const n = parseInt(m[1], 10);
+        if (n > max) max = n;
+      }
+    }
+    return max + 1;
+  }, [bucket, consultationId, segments.length]);
+
   const startRecording = useCallback(async () => {
-    if (!supported || recording) return;
+    if (!supported || recording || uploading) return;
 
     try {
       const md: any = (navigator as any).mediaDevices;
@@ -121,7 +143,6 @@ export default function RecorderMulti({
       chunksRef.current = [];
       setElapsedMs(0);
 
-      // TS note: certaines configs ne connaissent pas BlobEvent -> on tape en any
       mr.ondataavailable = (e: any) => {
         if (e?.data && e.data.size > 0) chunksRef.current.push(e.data);
       };
@@ -170,7 +191,7 @@ export default function RecorderMulti({
       setRecording(false);
       setElapsedMs(0);
     }
-  }, [supported, recording]);
+  }, [supported, recording, uploading]);
 
   const stopRecording = useCallback(() => {
     if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
@@ -188,34 +209,55 @@ export default function RecorderMulti({
         return;
       }
 
-      const next = count + 1;
-      const relativePath = `${consultationId}/seg-${next}.webm`; // chemin DANS le bucket
-      const storagePath = `${bucket}/${relativePath}`;           // affichage friendly
+      setUploading(true);
 
-      const { error } = await supabase.storage
-        .from(bucket)
-        .upload(relativePath, blob, {
-          contentType: "audio/webm",
-          upsert: false,
-        });
+      // Détermine l'index libre depuis le Storage pour éviter "already exists"
+      let next = await getNextIndex();
+      let relativePath = `${consultationId}/seg-${next}.webm`;
+      let storagePath = `${bucket}/${relativePath}`;
 
-      if (error) {
+      // Tentative d'upload (si conflit improbable, on ré-essaie en incrémentant)
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const { error } = await supabase.storage
+          .from(bucket)
+          .upload(relativePath, blob, {
+            contentType: "audio/webm",
+            upsert: false, // important: on veut un vrai nouvel objet
+          });
+
+        if (!error) {
+          // URL signée 30 min pour écoute facultative
+          const { data: signed } = await supabase.storage
+            .from(bucket)
+            .createSignedUrl(relativePath, 60 * 30);
+
+          setSegments((prev) => [
+            ...prev,
+            { storagePath, signedUrl: signed?.signedUrl, size: blob.size },
+          ]);
+          setUploading(false);
+          return;
+        }
+
+        // Si l'objet existe déjà, on incrémente et on retente
+        if (String(error.message).toLowerCase().includes("already exists")) {
+          next += 1;
+          relativePath = `${consultationId}/seg-${next}.webm`;
+          storagePath = `${bucket}/${relativePath}`;
+          continue;
+        }
+
+        // autre erreur
         alert("Upload audio échoué : " + error.message);
+        setUploading(false);
         return;
       }
 
-      // URL signée 30 min pour écoute facultative
-      const { data: signed } = await supabase.storage
-        .from(bucket)
-        .createSignedUrl(relativePath, 60 * 30);
-
-      setCount(next);
-      setSegments((prev) => [
-        ...prev,
-        { storagePath, signedUrl: signed?.signedUrl, size: blob.size },
-      ]);
+      // Si on arrive ici après 3 tentatives, on abandonne proprement
+      alert("Upload audio échoué après plusieurs tentatives (conflit de nom).");
+      setUploading(false);
     },
-    [bucket, consultationId, count]
+    [bucket, consultationId, getNextIndex]
   );
 
   const removeLast = useCallback(async () => {
@@ -236,7 +278,6 @@ export default function RecorderMulti({
 
     // 2) puis on met à jour le state
     setSegments((prev) => prev.slice(0, -1));
-    setCount((n) => Math.max(0, n - 1));
   }, [bucket, segments]);
 
   // cleanup au démontage
@@ -264,7 +305,7 @@ export default function RecorderMulti({
 
       <div style={{ display: "flex", gap: 8, marginBottom: 10, alignItems: "center" }}>
         {!recording ? (
-          <button type="button" onClick={startRecording} disabled={!supported}>
+          <button type="button" onClick={startRecording} disabled={!supported || uploading}>
             🎙️ Démarrer
           </button>
         ) : (
@@ -277,9 +318,10 @@ export default function RecorderMulti({
             </span>
           </>
         )}
-        <button type="button" onClick={removeLast} disabled={segments.length === 0}>
+        <button type="button" onClick={removeLast} disabled={segments.length === 0 || recording || uploading}>
           🧹 Supprimer le dernier segment
         </button>
+        {uploading && <span style={{ fontSize: 12, color: "#666" }}>Upload en cours…</span>}
       </div>
 
       {/* barre de progression */}
@@ -331,3 +373,4 @@ export default function RecorderMulti({
     </div>
   );
 }
+
