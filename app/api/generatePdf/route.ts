@@ -355,9 +355,16 @@ export async function POST(req: NextRequest) {
     if (!Array.isArray(audioPaths) || audioPaths.length === 0)
       return NextResponse.json({ error: "Aucun segment audio fourni" }, { status: 400 });
 
-    // 1) Télécharger l'audio
+    // ➜ Tri par seg-(n).webm + dédoublonnage
+    const orderedPaths = [...new Set<string>(audioPaths)].sort((a, b) => {
+      const na = Number(a.match(/seg-(\d+)\.webm/)?.[1] || 0);
+      const nb = Number(b.match(/seg-(\d+)\.webm/)?.[1] || 0);
+      return na - nb;
+    });
+
+    // 1) Télécharger l'audio (dans l'ordre)
     const audioBuffers: Uint8Array[] = [];
-    for (const p of audioPaths) {
+    for (const p of orderedPaths) {
       try {
         const buf = await downloadAudio(supabase, p);
         audioBuffers.push(buf);
@@ -429,5 +436,3 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: e.message || "Erreur serveur" }, { status: 500 });
   }
 }
-
-
