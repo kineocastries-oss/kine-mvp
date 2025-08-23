@@ -77,6 +77,7 @@ async function transcribeSegments(buffers: Uint8Array[]) {
     const buf = buffers[i];
     log(`Seg ${i + 1} size(bytes)=`, buf.length);
 
+    // écrit le segment en /tmp
     const filename = `seg-${Date.now()}-${i + 1}.webm`;
     const filePath = join(tmpDir, filename);
     writeFileSync(filePath, Buffer.from(buf));
@@ -101,8 +102,59 @@ async function transcribeSegments(buffers: Uint8Array[]) {
 
 /* ---------------------- Synthèse GPT & mise en page ---------------------- */
 const SYSTEM_PROMPT = `Tu es un assistant pour kinésithérapeute.
-... (je laisse ton prompt long inchangé ici) ...
-`;
+Tu reçois une transcription brute d’un échange patient-kiné.
+But : produire un TEXTE FINAL en français professionnel, AÉRÉ et LISIBLE, prêt à être posé tel quel dans un PDF.
+
+RÈGLES IMPÉRATIVES :
+- AUCUN Markdown (pas de #, ##, *, -, _).
+- PAS de placeholders ni points de suspension ("NR", "N/A", "{...}", "[...]", "…", "...").
+- CHAQUE information doit être sur UNE LIGNE distincte.
+- Laisse UNE LIGNE VIDE entre chaque section.
+- Si une information est inconnue, SUPPRIME la ligne entière (n’écris rien à sa place).
+- Si une section entière est vide, OMETS-LA complètement.
+- Numérotation stricte des sections : 1., 2., 3., … (continue, sans trous).
+- Style clair, phrases courtes, vocabulaire professionnel.
+
+MISE EN PAGE EXACTE À PRODUIRE (n’écris une ligne que si elle a un contenu réel) :
+
+Bilan kinésithérapique
+
+1. Informations patient
+Nom et prénom : …
+Âge : …
+Situation familiale : …
+Activité professionnelle : …
+Activités sociales et loisirs : …
+Antécédents médicaux importants : …
+
+2. Motif de consultation
+Raison de la venue : …
+Contexte d’apparition : …
+Examens complémentaires : …
+Parcours de soins déjà réalisé : …
+
+3. Évaluation clinique
+Douleur : …
+Incapacités fonctionnelles : …
+Observation clinique : …
+Tests spécifiques : …
+Facteurs aggravants ou de risque : …
+
+4. Explications données au patient
+Origine probable du trouble : …
+Lien avec son mode de vie ou antécédents : …
+Éléments de compréhension : …
+
+5. Plan de traitement
+Objectifs principaux : …
+Techniques envisagées : …
+Fréquence et durée : …
+
+NOTES :
+- Chaque rubrique commence par son titre de section sur UNE LIGNE DÉDIÉE.
+- Les informations de la rubrique sont chacune sur LEUR PROPRE LIGNE.
+- Une LIGNE VIDE sépare les sections.
+- N’ajoute aucune mention finale (le pied de page du PDF les gère).`;
 
 async function generateReportText(transcript: string, patientName: string) {
   const user = [
@@ -138,8 +190,61 @@ function stripMarkdown(md: string) {
     .trim();
 }
 
+/** Supprime lignes incomplètes, sections vides, et renumérote 1., 2., 3., … */
 function cleanAndRenumberBilan(raw: string): string {
-  ... // inchangé, garde ta fonction existante
+  const lines = (raw || "").split("\n");
+
+  // Garde l'en‑tête si présent
+  let header = "";
+  if (lines.length && lines[0].trim().toLowerCase().startsWith("bilan kinésithérapique")) {
+    header = "Bilan kinésithérapique";
+    lines.shift();
+  }
+
+  const sections: { title: string; items: string[] }[] = [];
+  let current: { title: string; items: string[] } | null = null;
+
+  const isSectionTitle = (s: string) => /^\d+\.\s/.test(s.trim());
+  const isEmptyItem = (s: string) => {
+    const t = s.trim();
+    if (!t) return true;
+    const m = t.match(/^([^:]+):\s*(.*)$/);
+    if (!m) return false;
+    const val = m[2].trim();
+    if (!val) return true;
+    if (val === "…" || val === "...") return true;
+    if (/^\.{2,}$/.test(val)) return true;
+    return false;
+  };
+
+  for (const rawLine of lines) {
+    const line = rawLine.replace(/\s+$/g, "");
+    if (!line.trim()) continue;
+    if (isSectionTitle(line)) {
+      if (current) sections.push(current);
+      current = { title: line.trim(), items: [] };
+    } else {
+      if (!current) continue;
+      if (!isEmptyItem(line)) current.items.push(line.trim());
+    }
+  }
+  if (current) sections.push(current);
+
+  const kept = sections.filter(s => s.items.length > 0);
+  kept.forEach((s, idx) => {
+    const titleNoNum = s.title.replace(/^\d+\.\s*/, "");
+    s.title = `${idx + 1}. ${titleNoNum}`;
+  });
+
+  const out: string[] = [];
+  if (header) out.push(header, "");
+  kept.forEach((s, i) => {
+    out.push(s.title);
+    s.items.forEach(it => out.push(it));
+    if (i < kept.length - 1) out.push("");
+  });
+
+  return out.join("\n");
 }
 
 /* ---------------------- DATE utilitaires ---------------------- */
@@ -160,10 +265,10 @@ function formatTodayShort() {
   const dd = String(d.getDate()).padStart(2, "0");
   const mm = String(d.getMonth() + 1).padStart(2, "0");
   const yyyy = d.getFullYear();
-  return `${dd}-${mm}-${yyyy}`;
+  return `${dd}-${mm}-${yyyy}`; // ex: 23-08-2025
 }
 
-/* ---------------------- Rendu PDF ---------------------- */
+/* ---------------------- Rendu PDF lisible & aéré ---------------------- */
 async function renderPdf(title: string, body: string) {
   const pdfDoc = await PDFDocument.create();
   let page = pdfDoc.addPage([595.28, 841.89]); // A4
@@ -210,13 +315,13 @@ async function renderPdf(title: string, body: string) {
   const mainTitle = title || "Bilan kinésithérapique";
   drawWrappedLine(mainTitle, 18, true);
 
-  // ---- Date du jour sous le titre
+  // ---- Date du jour (Europe/Paris) sous le titre
   const dateStr = formatTodayFR();
   drawWrappedLine(`Date : ${dateStr}`, 11, false);
 
-  y -= 4;
+  y -= 4; // petit espace
 
-  // ---- Corps
+  // ---- Corps (ligne par ligne)
   const lines = (body || "").split("\n");
   for (const raw of lines) {
     const line = raw.replace(/\s+$/g, "");
@@ -226,7 +331,7 @@ async function renderPdf(title: string, body: string) {
     drawWrappedLine(line, size, isSectionTitle);
   }
 
-  // ---- Pied de page
+  // ---- Pied de page (note sur la dernière page courante)
   page.drawText(
     "Généré automatiquement. Mentions : Consentement d’enregistrement recueilli.",
     { x: margin, y: margin, size: 8, font, color: rgb(0.25, 0.25, 0.25) }
@@ -235,8 +340,10 @@ async function renderPdf(title: string, body: string) {
   return new Uint8Array(await pdfDoc.save());
 }
 
-/* ---------------------- Email ---------------------- */
-async function sendEmail({ to, subject, html, pdfBytes, filename }: {
+/* ---------------------- Email (Resend) ---------------------- */
+async function sendEmail({
+  to, subject, html, pdfBytes, filename,
+}: {
   to: string[]; subject: string; html: string; pdfBytes: Uint8Array; filename: string;
 }) {
   const { Resend } = await import("resend");
@@ -262,65 +369,88 @@ async function sendEmail({ to, subject, html, pdfBytes, filename }: {
 export async function POST(req: NextRequest) {
   try {
     const supabase = adminSupabase();
-    const { consultationId, patientName, emailKine, emailPatient, audioPaths, sendEmailToKine = true } = await req.json();
+    const {
+      consultationId,
+      patientName,
+      emailKine,
+      emailPatient,
+      audioPaths,
+      sendEmailToKine = true,
+    } = await req.json();
 
     if (!consultationId) return NextResponse.json({ error: "consultationId manquant" }, { status: 400 });
     if (!emailKine)     return NextResponse.json({ error: "emailKine manquant" }, { status: 400 });
     if (!Array.isArray(audioPaths) || audioPaths.length === 0)
       return NextResponse.json({ error: "Aucun segment audio fourni" }, { status: 400 });
 
+    // ➜ Tri par seg-(n).webm + dédoublonnage
     const orderedPaths = [...new Set<string>(audioPaths)].sort((a, b) => {
       const na = Number(a.match(/seg-(\d+)\.webm/)?.[1] || 0);
       const nb = Number(b.match(/seg-(\d+)\.webm/)?.[1] || 0);
       return na - nb;
     });
 
+    // 1) Télécharger l'audio (dans l'ordre)
     const audioBuffers: Uint8Array[] = [];
     for (const p of orderedPaths) {
-      const buf = await downloadAudio(supabase, p);
-      audioBuffers.push(buf);
+      try {
+        const buf = await downloadAudio(supabase, p);
+        audioBuffers.push(buf);
+      } catch (e: any) {
+        return NextResponse.json(
+          { error: `Téléchargement audio impossible (${p}) : ${e.message}` }, { status: 400 }
+        );
+      }
     }
 
+    // 2) Transcription
     let transcript = await transcribeSegments(audioBuffers);
+    log("Transcript head:", transcript.slice(0, 200).replace(/\n/g, " "));
     if (!transcript.trim()) {
-      transcript = "(Transcription indisponible — audio reçu mais non reconnu)";
+      transcript = "(Transcription indisponible — audio reçu mais non reconnu par Whisper. Vérifier format/codec.)";
     }
 
+    // 3) Synthèse (GPT) → texte formaté
     const fromGpt = await generateReportText(transcript, patientName || "Patient");
     const cleaned = cleanAndRenumberBilan(stripMarkdown(fromGpt));
 
-    const pdfBytes = await renderPdf(
-      `Bilan kinésithérapique — ${patientName || "Patient"}`,
-      cleaned
-    );
+    // 4) PDF (titre sans date, date ajoutée juste dessous par renderPdf)
+    const pdfBytes = await renderPdf(`Bilan kinésithérapique — ${patientName || "Patient"}`, cleaned);
 
+    // 5) Upload
     const pdfPath = `pdf/${consultationId}.pdf`;
     await uploadPdf(supabase, pdfPath, pdfBytes);
+
+    // 6) URL signée
     const url = await signedPdfUrl(supabase, pdfPath, 3600);
 
-    // Nom du fichier joint = avec date
+    // 7) Email — nom de fichier avec date courte
     const dateShort = formatTodayShort();
     const pdfFilename = `Bilan-${(patientName || "Patient").replace(/\s+/g, "_")}-${dateShort}.pdf`;
 
     const recipients: string[] = [];
     if (sendEmailToKine && emailKine) recipients.push(emailKine);
     if (emailPatient) recipients.push(emailPatient);
-
     if (recipients.length > 0) {
-      await sendEmail({
-        to: recipients,
-        subject: `Bilan kinésithérapique — ${patientName || "Patient"}`,
-        html: [
-          "<p>Bonjour,</p>",
-          "<p>Veuillez trouver le bilan en pièce jointe.</p>",
-          `<p>Lien (valide 1h) : <a href="${url}">Télécharger le PDF</a></p>`,
-          "<p>— GPT-Kiné</p>"
-        ].join(""),
-        pdfBytes,
-        filename: pdfFilename,
-      });
+      try {
+        await sendEmail({
+          to: recipients,
+          subject: `Bilan kinésithérapique — ${patientName || "Patient"}`,
+          html: [
+            "<p>Bonjour,</p>",
+            "<p>Veuillez trouver le bilan en pièce jointe.</p>",
+            `<p>Lien (valide 1h) : <a href="${url}">Télécharger le PDF</a></p>`,
+            "<p>— GPT‑Kiné</p>"
+          ].join(""),
+          pdfBytes,
+          filename: pdfFilename,
+        });
+      } catch (e: any) {
+        console.error("Resend email error:", e?.message || e);
+      }
     }
 
+    // 8) Update DB
     await supabase
       .from("consultations")
       .update({
@@ -337,3 +467,4 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: e.message || "Erreur serveur" }, { status: 500 });
   }
 }
+
