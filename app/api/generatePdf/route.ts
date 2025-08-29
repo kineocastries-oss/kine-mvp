@@ -355,13 +355,13 @@ async function sendEmail({
     to,
     subject,
     html,
-    attachments: [
-      {
-        filename,
-        content: Buffer.from(pdfBytes).toString("base64"),
-        content_type: "application/pdf",
-      },
-    ],
+  attachments: [
+  {
+    filename,
+    content: Buffer.from(pdfBytes).toString("base64"),
+    contentType: "application/pdf", // ✅ camelCase
+  },
+], 
   });
 }
 
