@@ -32,6 +32,119 @@ export default function NouveauBilanPage() {
   async function onGeneratePdf() {
     try {
       setLoading(true);
-      set
+      setReportUrl(null);
 
+      const res = await fetch("/api/generatePdf", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          consultationId,           // string
+          patientName,              // string
+          emailKine,                // string (obligatoire)
+          emailPatient: emailPatient || undefined, // optionnel
+          audioPaths,               // string[]
+          sendEmailToKine: true,    // envoie aussi au kiné
+        }),
+      });
+
+      const json = await res.json();
+      if (!res.ok || !json?.ok) {
+        throw new Error(json?.error || "Échec génération/envoi");
+      }
+
+      setReportUrl(json.url || null); // URL signée 1h
+      alert("✅ PDF généré et e-mail envoyé !");
+    } catch (err: any) {
+      alert(err?.message || "Erreur inconnue");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <main style={{ padding: "2rem", maxWidth: 820, margin: "0 auto" }}>
+      <h1 style={{ marginBottom: 16 }}>Nouveau Bilan 📝</h1>
+
+      {/* Patient */}
+      <div style={{ marginBottom: 12 }}>
+        <label style={{ display: "block", marginBottom: 6 }}>Nom du patient</label>
+        <input
+          value={patientName}
+          onChange={(e) => setPatientName(e.target.value)}
+          placeholder="Ex : Robert Dupont"
+          style={{ width: "100%", padding: 8 }}
+        />
+      </div>
+
+      {/* Emails */}
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 12 }}>
+        <div>
+          <label style={{ display: "block", marginBottom: 6 }}>
+            Email kiné <span style={{ color: "crimson" }}>*</span>
+          </label>
+          <input
+            value={emailKine}
+            onChange={(e) => setEmailKine(e.target.value)}
+            placeholder="kine@cabinet.fr"
+            style={{ width: "100%", padding: 8 }}
+          />
+        </div>
+        <div>
+          <label style={{ display: "block", marginBottom: 6 }}>Email patient (optionnel)</label>
+          <input
+            value={emailPatient}
+            onChange={(e) => setEmailPatient(e.target.value)}
+            placeholder="patient@email.fr"
+            style={{ width: "100%", padding: 8 }}
+          />
+        </div>
+      </div>
+
+      {/* Enregistreur multi-segments */}
+      <section style={{ border: "1px solid #ddd", borderRadius: 8, padding: 16, marginBottom: 16 }}>
+        <h2 style={{ marginTop: 0, marginBottom: 8 }}>Enregistrement 🎙️</h2>
+
+        <RecorderMulti
+          onChange={handleAudioChange}
+          consultationId={consultationId}
+          bucket="audio"
+        />
+
+        {/* Aperçu segments */}
+        <div style={{ marginTop: 12, fontSize: 14 }}>
+          <strong>Segments :</strong> {audioPaths.length}
+          {audioPaths.length > 0 && (
+            <ul style={{ marginTop: 8 }}>
+              {audioPaths.map((p) => (
+                <li key={p} style={{ wordBreak: "break-all" }}>{p}</li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </section>
+
+      {/* Bouton génération */}
+      <button
+        onClick={onGeneratePdf}
+        disabled={!canGenerate}
+        style={{
+          padding: "10px 16px",
+          cursor: canGenerate ? "pointer" : "not-allowed",
+          opacity: canGenerate ? 1 : 0.5,
+        }}
+      >
+        {loading ? "⏳ Génération en cours..." : "📄 Générer le PDF"}
+      </button>
+
+      {/* Lien de téléchargement */}
+      {reportUrl && (
+        <p style={{ marginTop: 14 }}>
+          <a href={reportUrl} target="_blank" rel="noreferrer">
+            🔗 Télécharger le PDF
+          </a>
+        </p>
+      )}
+    </main>
+  );
+}
 
