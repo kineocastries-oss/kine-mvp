@@ -77,7 +77,6 @@ async function transcribeSegments(buffers: Uint8Array[]) {
     const buf = buffers[i];
     log(`Seg ${i + 1} size(bytes)=`, buf.length);
 
-    // écrit le segment en /tmp
     const filename = `seg-${Date.now()}-${i + 1}.webm`;
     const filePath = join(tmpDir, filename);
     writeFileSync(filePath, Buffer.from(buf));
@@ -194,7 +193,7 @@ function stripMarkdown(md: string) {
 function cleanAndRenumberBilan(raw: string): string {
   const lines = (raw || "").split("\n");
 
-  // Garde l'en‑tête si présent
+  // Garde l'en-tête si présent
   let header = "";
   if (lines.length && lines[0].trim().toLowerCase().startsWith("bilan kinésithérapique")) {
     header = "Bilan kinésithérapique";
@@ -265,7 +264,7 @@ function formatTodayShort() {
   const dd = String(d.getDate()).padStart(2, "0");
   const mm = String(d.getMonth() + 1).padStart(2, "0");
   const yyyy = d.getFullYear();
-  return `${dd}-${mm}-${yyyy}`; // ex: 23-08-2025
+  return `${dd}-${mm}-${yyyy}`;
 }
 
 /* ---------------------- Rendu PDF lisible & aéré ---------------------- */
@@ -311,17 +310,14 @@ async function renderPdf(title: string, body: string) {
     if (current.trim()) drawLineRaw(current, size, bold);
   };
 
-  // ---- Titre principal
   const mainTitle = title || "Bilan kinésithérapique";
   drawWrappedLine(mainTitle, 18, true);
 
-  // ---- Date du jour (Europe/Paris) sous le titre
   const dateStr = formatTodayFR();
   drawWrappedLine(`Date : ${dateStr}`, 11, false);
 
-  y -= 4; // petit espace
+  y -= 4;
 
-  // ---- Corps (ligne par ligne)
   const lines = (body || "").split("\n");
   for (const raw of lines) {
     const line = raw.replace(/\s+$/g, "");
@@ -331,7 +327,6 @@ async function renderPdf(title: string, body: string) {
     drawWrappedLine(line, size, isSectionTitle);
   }
 
-  // ---- Pied de page (note sur la dernière page courante)
   page.drawText(
     "Généré automatiquement. Mentions : Consentement d’enregistrement recueilli.",
     { x: margin, y: margin, size: 8, font, color: rgb(0.25, 0.25, 0.25) }
@@ -345,24 +340,29 @@ async function sendEmail({
   to, subject, html, pdfBytes, filename,
 }: {
   to: string[]; subject: string; html: string; pdfBytes: Uint8Array; filename: string;
-}) {
+}): Promise<{ id?: string }> {
   const { Resend } = await import("resend");
   const { sender } = assertEnv();
   const resend = new Resend(process.env.RESEND_API_KEY!);
 
-  await resend.emails.send({
-    from: sender!,
+  const { data, error } = await resend.emails.send({
+    from: sender!,                 // ex: "Kineo <no-reply@bilan-mvp.fr>"
     to,
     subject,
     html,
- attachments: [
-  {
-    filename,
-    content: Buffer.from(pdfBytes).toString("base64"),
-    content_type: "application/pdf", // <= remettre snake_case pour v3.4.0
-  },
-],
+    attachments: [
+      {
+        filename,
+        content: Buffer.from(pdfBytes).toString("base64"),
+        content_type: "application/pdf", // v3.x du SDK
+      },
+    ],
   });
+
+  if (error) {
+    throw new Error(`Resend error: ${error.message || String(error)}`);
+  }
+  return { id: (data as any)?.id };
 }
 
 /* ---------------------- Handler ---------------------- */
@@ -414,7 +414,7 @@ export async function POST(req: NextRequest) {
     const fromGpt = await generateReportText(transcript, patientName || "Patient");
     const cleaned = cleanAndRenumberBilan(stripMarkdown(fromGpt));
 
-    // 4) PDF (titre sans date, date ajoutée juste dessous par renderPdf)
+    // 4) PDF
     const pdfBytes = await renderPdf(`Bilan kinésithérapique — ${patientName || "Patient"}`, cleaned);
 
     // 5) Upload
@@ -428,29 +428,38 @@ export async function POST(req: NextRequest) {
     const dateShort = formatTodayShort();
     const pdfFilename = `Bilan-${(patientName || "Patient").replace(/\s+/g, "_")}-${dateShort}.pdf`;
 
-    const recipients: string[] = [];
-    if (sendEmailToKine && emailKine) recipients.push(emailKine);
-    if (emailPatient) recipients.push(emailPatient);
+    const recipients = [sendEmailToKine ? emailKine : null, emailPatient]
+      .filter(Boolean)
+      .map(String)
+      .map((x) => x.trim())
+      .filter((x) => /\S+@\S+\.\S+/.test(x));
+
+    let emailInfo: { sent: boolean; id?: string; to?: string[]; error?: string } = { sent: false };
+
     if (recipients.length > 0) {
       try {
-        await sendEmail({
+        const res = await sendEmail({
           to: recipients,
           subject: `Bilan kinésithérapique — ${patientName || "Patient"}`,
           html: [
             "<p>Bonjour,</p>",
             "<p>Veuillez trouver le bilan en pièce jointe.</p>",
             `<p>Lien (valide 1h) : <a href="${url}">Télécharger le PDF</a></p>`,
-            "<p>— GPT‑Kiné</p>"
+            "<p>— GPT-Kiné</p>",
           ].join(""),
           pdfBytes,
           filename: pdfFilename,
         });
+        emailInfo = { sent: true, id: res.id, to: recipients };
       } catch (e: any) {
-        console.error("Resend email error:", e?.message || e);
+        emailInfo = { sent: false, to: recipients, error: e?.message || String(e) };
+        console.error("[Resend FAILED]", emailInfo);
       }
+    } else {
+      emailInfo = { sent: false, to: recipients, error: "Aucun destinataire valide" };
     }
 
-    // 8) Update DB
+    // 8) Update DB (facultatif selon ton schéma)
     await supabase
       .from("consultations")
       .update({
@@ -461,7 +470,7 @@ export async function POST(req: NextRequest) {
       })
       .eq("id", consultationId);
 
-    return NextResponse.json({ ok: true, url, pdfPath });
+    return NextResponse.json({ ok: true, url, pdfPath, email: emailInfo });
   } catch (e: any) {
     console.error(e);
     return NextResponse.json({ error: e.message || "Erreur serveur" }, { status: 500 });
