@@ -13,12 +13,12 @@ export default function NouveauBilanPage() {
   const [audioPaths, setAudioPaths] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
   const [reportUrl, setReportUrl] = useState<string | null>(null);
+  const [statusMsg, setStatusMsg] = useState<string | null>(null);
 
   // Id technique (dossier pour ranger les segments dans Storage)
   const [consultationId] = useState<string>(() => crypto.randomUUID());
 
   const handleAudioChange = useCallback((paths: string[]) => {
-    // on reçoit des chemins "audio/<id>/seg-X.webm"
     setAudioPaths(paths);
   }, []);
 
@@ -33,17 +33,18 @@ export default function NouveauBilanPage() {
     try {
       setLoading(true);
       setReportUrl(null);
+      setStatusMsg("⏳ Génération du PDF et envoi de l'e-mail en cours...");
 
       const res = await fetch("/api/generatePdf", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          consultationId,           // string
-          patientName,              // string
-          emailKine,                // string (obligatoire)
-          emailPatient: emailPatient || undefined, // optionnel
-          audioPaths,               // string[]
-          sendEmailToKine: true,    // envoie aussi au kiné
+          consultationId,
+          patientName,
+          emailKine,
+          emailPatient: emailPatient || undefined,
+          audioPaths,
+          sendEmailToKine: true,
         }),
       });
 
@@ -52,10 +53,24 @@ export default function NouveauBilanPage() {
         throw new Error(json?.error || "Échec génération/envoi");
       }
 
-      setReportUrl(json.url || null); // URL signée 1h
-      alert("✅ PDF généré et e-mail envoyé !");
+      setReportUrl(json.url || null);
+
+      const email = json.email;
+      if (email?.sent) {
+        setStatusMsg(
+          `✅ PDF généré et e-mail envoyé.\nDestinataires : ${(email.to || []).join(
+            ", "
+          )}\nID Resend : ${email.id || "n/a"}`
+        );
+      } else {
+        setStatusMsg(
+          `⚠️ PDF généré, mais l'e-mail n'a pas été envoyé.\n` +
+            `Destinataires : ${(email?.to || []).join(", ") || "aucun"}\n` +
+            `Raison : ${email?.error || "inconnue"}`
+        );
+      }
     } catch (err: any) {
-      alert(err?.message || "Erreur inconnue");
+      setStatusMsg(`❌ Erreur : ${err?.message || "inconnue"}`);
     } finally {
       setLoading(false);
     }
@@ -77,7 +92,14 @@ export default function NouveauBilanPage() {
       </div>
 
       {/* Emails */}
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 12 }}>
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "1fr 1fr",
+          gap: 12,
+          marginBottom: 12,
+        }}
+      >
         <div>
           <label style={{ display: "block", marginBottom: 6 }}>
             Email kiné <span style={{ color: "crimson" }}>*</span>
@@ -90,7 +112,9 @@ export default function NouveauBilanPage() {
           />
         </div>
         <div>
-          <label style={{ display: "block", marginBottom: 6 }}>Email patient (optionnel)</label>
+          <label style={{ display: "block", marginBottom: 6 }}>
+            Email patient (optionnel)
+          </label>
           <input
             value={emailPatient}
             onChange={(e) => setEmailPatient(e.target.value)}
@@ -101,7 +125,14 @@ export default function NouveauBilanPage() {
       </div>
 
       {/* Enregistreur multi-segments */}
-      <section style={{ border: "1px solid #ddd", borderRadius: 8, padding: 16, marginBottom: 16 }}>
+      <section
+        style={{
+          border: "1px solid #ddd",
+          borderRadius: 8,
+          padding: 16,
+          marginBottom: 16,
+        }}
+      >
         <h2 style={{ marginTop: 0, marginBottom: 8 }}>Enregistrement 🎙️</h2>
 
         <RecorderMulti
@@ -116,7 +147,9 @@ export default function NouveauBilanPage() {
           {audioPaths.length > 0 && (
             <ul style={{ marginTop: 8 }}>
               {audioPaths.map((p) => (
-                <li key={p} style={{ wordBreak: "break-all" }}>{p}</li>
+                <li key={p} style={{ wordBreak: "break-all" }}>
+                  {p}
+                </li>
               ))}
             </ul>
           )}
@@ -136,6 +169,22 @@ export default function NouveauBilanPage() {
         {loading ? "⏳ Génération en cours..." : "📄 Générer le PDF"}
       </button>
 
+      {/* Zone de statut */}
+      {statusMsg && (
+        <pre
+          style={{
+            marginTop: 16,
+            padding: "12px",
+            background: "#f8f8f8",
+            border: "1px solid #ddd",
+            borderRadius: 8,
+            whiteSpace: "pre-wrap",
+          }}
+        >
+          {statusMsg}
+        </pre>
+      )}
+
       {/* Lien de téléchargement */}
       {reportUrl && (
         <p style={{ marginTop: 14 }}>
@@ -147,4 +196,3 @@ export default function NouveauBilanPage() {
     </main>
   );
 }
-
